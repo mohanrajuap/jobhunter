@@ -557,8 +557,16 @@ class JobHunterApp(tk.Tk):
         problems = self.cfg.validate()
         blocking = [p for p in problems if "resume" in p.lower() or "Nothing to search" in p]
         if blocking:
-            messagebox.showerror("Configuration problem", "\n".join(blocking))
+            messagebox.showerror(
+                "Configuration problem",
+                "\n".join(blocking)
+                + "\n\nFix this on the Roles & Resumes tab, then Save roles.",
+            )
             return
+
+        # Stale resume paths are survivable — say so in the log and carry on.
+        for warning in self.cfg.warnings():
+            self._append_log(f"NOTE: {warning}")
 
         self._begin("Searching…")
         self.tree.delete(*self.tree.get_children())

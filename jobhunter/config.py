@@ -133,12 +133,18 @@ class Config:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def _validate_resumes(self) -> list[str]:
-        """Every role needs at least one readable resume; a role without its own falls
-        back to profile.resume_path, so only one of the two has to be set."""
+    def _validate_resumes(self) -> tuple[list[str], list[str]]:
+        """Returns (blocking problems, warnings).
+
+        A role is fine as long as *one* of its resumes exists — `RoleTarget.best_resume`
+        already skips unusable variants at runtime. A stale extra path is worth
+        mentioning but must not stop a run that can otherwise proceed.
+        """
         problems: list[str] = []
+        warnings: list[str] = []
         roles = self.get("roles", []) or []
         global_resume = self.resume_path
+        global_ok = bool(global_resume and global_resume.exists())
 
         if not roles:
             if not global_resume:
@@ -146,29 +152,54 @@ class Config:
                     "No resume configured — set profile.resume_path, or define `roles:` "
                     "with a resumes list"
                 )
-            elif not global_resume.exists():
+            elif not global_ok:
                 problems.append(f"profile.resume_path does not exist: {global_resume}")
-            return problems
+            return problems, warnings
 
-        if global_resume and not global_resume.exists():
-            problems.append(f"profile.resume_path does not exist: {global_resume}")
+        if global_resume and not global_ok:
+            warnings.append(
+                f"profile.resume_path does not exist and will be ignored: {global_resume}"
+            )
 
         for role in roles:
             if not role.get("enabled", True):
                 continue
             name = role.get("name", "unnamed")
             specs = role.get("resumes", []) or []
+
             if not specs:
-                if not global_resume:
-                    problems.append(f"role '{name}' has no resumes and profile.resume_path is unset")
+                if not global_ok:
+                    problems.append(
+                        f"role '{name}' has no resume — add one on the Roles & Resumes tab"
+                    )
                 continue
+
+            present, missing = [], []
             for spec in specs:
                 path = spec if isinstance(spec, str) else spec.get("path", "")
                 if not path:
-                    problems.append(f"role '{name}' has a resume entry with no path")
-                elif not Path(path).expanduser().exists():
-                    problems.append(f"role '{name}': resume not found — {path}")
-        return problems
+                    missing.append("(entry with no path)")
+                elif Path(path).expanduser().exists():
+                    present.append(path)
+                else:
+                    missing.append(path)
+
+            if not present and not global_ok:
+                listed = ", ".join(missing[:3])
+                problems.append(
+                    f"role '{name}' has no usable resume — none of its files exist: {listed}"
+                )
+            elif missing:
+                warnings.append(
+                    f"role '{name}': ignoring {len(missing)} missing resume(s) — "
+                    f"{', '.join(missing[:3])}"
+                )
+
+        return problems, warnings
+
+    def warnings(self) -> list[str]:
+        """Non-blocking configuration issues worth surfacing but not worth stopping for."""
+        return self._validate_resumes()[1]
 
     def validate(self) -> list[str]:
         """Return human-readable problems. Empty list means good to go."""
@@ -178,7 +209,7 @@ class Config:
             if not p.get(required):
                 problems.append(f"profile.{required} is required for filling application forms")
 
-        problems.extend(self._validate_resumes())
+        problems.extend(self._validate_resumes()[0])
 
         roles = self.get("roles", []) or self.get("search.roles", [])
         keywords = self.get("search.keywords", [])

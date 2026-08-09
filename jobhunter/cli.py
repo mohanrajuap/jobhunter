@@ -215,6 +215,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print(f"  ✗ {problem}")
     else:
         print("  ✓ required fields present")
+    for warning in config.warnings():
+        print(f"  ! {warning}")
 
     print("\nRoles and resumes")
     try:
