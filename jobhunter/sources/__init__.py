@@ -10,11 +10,13 @@ from .ashby import AshbySource
 from .base import BoardSource, Source, make_session
 from .career_page import CareerPageSource, sniff_ats
 from .greenhouse import GreenhouseSource
+from .kula import KulaSource
 from .lever import LeverSource
 from .linkedin import LinkedInSource
 from .naukri import NaukriSource
 from .recruitee import RecruiteeSource
 from .smartrecruiters import SmartRecruitersSource
+from .workday import WorkdaySource
 from .workable import WorkableSource
 
 log = logging.getLogger(__name__)
@@ -32,12 +34,13 @@ __all__ = [
     "Source", "BoardSource", "BOARD_SOURCES", "ALL_SOURCE_NAMES", "build_sources", "sniff_ats",
     "GreenhouseSource", "LeverSource", "AshbySource", "SmartRecruitersSource",
     "WorkableSource", "RecruiteeSource", "NaukriSource", "LinkedInSource", "CareerPageSource",
+    "WorkdaySource", "KulaSource",
 ]
 
 # Every source the UI can offer, in the order it shows them.
 ALL_SOURCE_NAMES = [
     "naukri", "linkedin", "greenhouse", "lever", "ashby",
-    "smartrecruiters", "workable", "recruitee", "career_pages",
+    "smartrecruiters", "workable", "recruitee", "workday", "kula", "career_pages",
 ]
 
 
@@ -77,6 +80,20 @@ def build_sources(
             log.warning("sources.naukri is enabled but no browser session was provided — skipping")
         else:
             sources.append(NaukriSource(naukri_cfg, browser=browser))
+
+    workday_cfg = config.section("sources.workday")
+    if workday_cfg.get("enabled", False) and wanted("workday"):
+        if workday_cfg.get("companies"):
+            sources.append(WorkdaySource(workday_cfg, session=session))
+        else:
+            log.warning("sources.workday is enabled but lists no companies — skipping")
+
+    kula_cfg = config.section("sources.kula")
+    if kula_cfg.get("enabled", False) and wanted("kula"):
+        if kula_cfg.get("companies"):
+            sources.append(KulaSource(kula_cfg, session=session))
+        else:
+            log.warning("sources.kula is enabled but lists no companies — skipping")
 
     linkedin_cfg = config.section("sources.linkedin")
     if linkedin_cfg.get("enabled", False) and wanted("linkedin"):

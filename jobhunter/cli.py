@@ -374,6 +374,20 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_probe(args: argparse.Namespace) -> int:
+    """Work out where a career site keeps its jobs, and print the config to read them."""
+    config = _bootstrap(args)
+    from .browser import browser_from_config
+    from .discovery import probe_career_site
+
+    print(f"\nProbing {args.url} — loading it in a browser and watching what it fetches…\n")
+    with browser_from_config(config, headless=not args.show) as browser:
+        report = probe_career_site(args.url, browser, wait_ms=args.wait * 1000)
+
+    print(report.to_text())
+    return 0 if report.findings else 1
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     """Open the desktop UI. Config problems are reported inside the window, not here,
     so the UI still opens when there's nothing configured yet."""
@@ -443,6 +457,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_sched = sub.add_parser("schedule", help="print how to register the daily run")
     p_sched.add_argument("--at", help="time of day, HH:MM (default: schedule.time)")
     p_sched.set_defaults(func=cmd_schedule)
+
+    p_probe = sub.add_parser(
+        "probe", help="find where a career site keeps its jobs and print the config for it")
+    p_probe.add_argument("url", help="the company's careers page URL")
+    p_probe.add_argument("--wait", type=int, default=6, help="seconds to watch for requests")
+    p_probe.add_argument("--show", action="store_true", help="show the browser while probing")
+    p_probe.set_defaults(func=cmd_probe)
 
     p_gui = sub.add_parser("gui", help="open the desktop UI")
     p_gui.set_defaults(func=cmd_gui)

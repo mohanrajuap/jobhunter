@@ -628,8 +628,10 @@ class JobHunterApp(tk.Tk):
         ttk.Button(list_btns, text="Add", width=8, command=self.on_add_page).pack(side="left")
         ttk.Button(list_btns, text="Delete", width=8, command=self.on_delete_page).pack(
             side="left", padx=4)
-        ttk.Button(list_btns, text="🔎  Test this page", style="Ghost.TButton",
+        ttk.Button(list_btns, text="🔎  Test", style="Ghost.TButton",
                    command=self.on_test_page).pack(side="left", padx=4)
+        ttk.Button(list_btns, text="🛰  Find job data", style="Accent.TButton",
+                   command=self.on_probe_page).pack(side="left", padx=4)
 
         right = ttk.Frame(body)
         right.pack(side="left", fill="y")
@@ -747,6 +749,57 @@ class JobHunterApp(tk.Tk):
             worker.send("page_test", (page.get("name", ""), jobs))
 
         self.worker.start(task)
+
+    def on_probe_page(self) -> None:
+        """Open the page, watch what it fetches, and report how its jobs can be read.
+
+        This is the escape hatch for career sites that scraping can't touch: most of
+        them load their listings from a JSON endpoint, and this finds it.
+        """
+        self._capture_page()
+        if self._current_page is None:
+            messagebox.showinfo("Pick a page", "Select or add a career page first.")
+            return
+        url = self._pages_data[self._current_page].get("url", "")
+        if not url:
+            messagebox.showerror("No URL", "Enter the careers URL first.")
+            return
+        if self.worker.busy:
+            messagebox.showinfo("Busy", "A task is already running.")
+            return
+
+        self._begin(f"Probing {url}…")
+        cfg = self.cfg
+
+        def task(worker: Worker) -> None:
+            from ..browser import browser_from_config
+            from ..discovery import probe_career_site
+
+            with browser_from_config(cfg) as browser:
+                report = probe_career_site(url, browser)
+            worker.send("probe", report)
+
+        self.worker.start(task)
+
+    def _show_probe(self, report: Any) -> None:
+        self._append_log(report.to_text())
+        best = report.best
+        if best is None:
+            messagebox.showwarning(
+                "No job data found",
+                f"Could not find where {report.url} keeps its jobs.\n\n"
+                "The full report is on the Activity tab. Usually this means the listing "
+                "lives on a different URL — look for a 'View openings' link and probe that.",
+            )
+            return
+
+        self.notebook.select(5)  # Activity tab, where the full report is
+        messagebox.showinfo(
+            "Found it",
+            f"{best.kind}: {best.detail}\n\n"
+            + (f"{best.sample}\n\n" if best.sample else "")
+            + "The full report — including the config to paste — is on the Activity tab.",
+        )
 
     def _show_page_test(self, payload: tuple[str, list]) -> None:
         name, jobs = payload
@@ -1561,6 +1614,8 @@ class JobHunterApp(tk.Tk):
                 self._refresh_tree()
             elif message.kind == "oracle_test":
                 self._show_oracle_test(message.payload)
+            elif message.kind == "probe":
+                self._show_probe(message.payload)
             elif message.kind == "page_test":
                 self._show_page_test(message.payload)
             elif message.kind == "await_user":

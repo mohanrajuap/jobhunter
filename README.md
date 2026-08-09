@@ -230,6 +230,84 @@ Naukri jobs come out in three ways:
 
 ---
 
+## Finding a career site's job data
+
+Most career pages are an empty shell that fetches its listings from somewhere. The
+problem was never parsing — it was *finding* that somewhere. So:
+
+```bash
+jobhunter probe https://company.com/careers
+```
+
+It opens the page in a real browser, watches every request it makes, and reports how the
+jobs can be read — then prints the config block to paste in. The **🛰 Find job data**
+button on the Career Pages tab does the same thing.
+
+Four checks, best first:
+
+1. **A supported board** — Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee
+2. **Workday** — tenant and site read straight off the URL
+3. **The page's own API** — any XHR returning JSON that looks like jobs; this is what
+   catches bespoke and niche systems
+4. **schema.org JobPosting** — the structured markup sites add for Google Jobs
+
+Real results:
+
+```
+browserstack.com/careers  →  [HIGH]   Workday tenant 'browserstack' (wd3), site 'External'
+razorpay.com/jobs         →  [HIGH]   greenhouse board 'razorpaysoftwareprivatelimited'
+cashfree.com/careers      →  [MEDIUM] JSON endpoint: careers.kula.ai/api/.../ats_job_posts
+juspay.io/careers         →  [MEDIUM] JSON endpoint: joinus.juspay.in/api/careerJobOpening
+```
+
+The Cashfree probe is how the Kula adapter below got written. If a probe turns up an
+endpoint with no adapter yet, that's the raw material for one.
+
+---
+
+## Workday
+
+Workday runs a large share of enterprise hiring, Indian GCCs included, and its careers
+pages are JavaScript shells with no board slug — so those companies were previously
+invisible to this tool. They do serve their own listings from a JSON endpoint:
+
+```yaml
+workday:
+  enabled: true
+  companies:
+    - name: BrowserStack
+      tenant: browserstack
+      wd: wd3
+      site: External
+```
+
+Three values identify a board — tenant, the `wdN` shard, and the site name — and all
+three are in the careers URL. **Don't guess them**; site names vary far too much
+(`External`, `External_Career_Site`, `Careers`, …). Run `jobhunter probe` and paste what
+it gives you.
+
+Verified: BrowserStack returns 34 jobs, **30 of them in India**, with full descriptions.
+
+## Kula.ai
+
+A recruiting platform used by several Indian startups. Same story as Workday — no slug,
+client-side page, but a clean public listing behind it. The account name is the slug in
+the company's Kula careers URL.
+
+```yaml
+kula:
+  enabled: true
+  companies:
+    - account: cashfree
+      name: Cashfree Payments
+```
+
+One caveat: Kula publishes no posting date, so these jobs have an unknown age. That's
+recorded as unknown rather than faked — the Scorer treats it as neutral, but a "posted
+within N days" filter can't narrow them.
+
+---
+
 ## Company career pages
 
 Add any company's careers URL on the **Career Pages** tab. Two things happen, in order:

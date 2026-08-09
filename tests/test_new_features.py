@@ -566,6 +566,128 @@ class TestCareerPageSourceWiring:
         assert source.browser is sentinel
 
 
+class TestWorkday:
+    """Workday is the biggest single gap this closes — enterprise and Indian GCC
+    hiring, none of which was reachable by sniffing or scraping."""
+
+    @pytest.mark.parametrize("html,expected", [
+        ("visit https://browserstack.wd3.myworkdayjobs.com/en-US/External today",
+         ("browserstack", "wd3", "External")),
+        ('<a href="https://salesforce.wd12.myworkdayjobs.com/External_Career_Site">Jobs</a>',
+         ("salesforce", "wd12", "External_Career_Site")),
+    ])
+    def test_tenant_site_read_from_url(self, html, expected):
+        from jobhunter.sources.workday import discover_from_html
+
+        assert discover_from_html(html) == expected
+
+    def test_non_workday_page_detects_nothing(self):
+        from jobhunter.sources.workday import discover_from_html
+
+        assert discover_from_html("<html><a href='https://acme.com/careers'>Jobs</a></html>") is None
+
+    @pytest.mark.parametrize("text,max_age_days", [
+        ("Posted Today", 0.1), ("Posted Yesterday", 1.1),
+        ("Posted 3 Days Ago", 3.1), ("Posted 30+ Days Ago", 30.1),
+    ])
+    def test_relative_posting_dates(self, text, max_age_days):
+        from jobhunter.sources.workday import _parse_posted
+
+        parsed = _parse_posted(text)
+        assert parsed is not None
+        age = (Job(source="t", company="c", title="t", url="u", posted_at=parsed).age_days())
+        assert age <= max_age_days
+
+    def test_unparseable_date_is_none(self):
+        from jobhunter.sources.workday import _parse_posted
+
+        assert _parse_posted("") is None
+        assert _parse_posted("sometime recently") is None
+
+    def test_board_config_accepts_url_or_explicit_fields(self):
+        from jobhunter.sources.workday import WorkdaySource
+
+        source = WorkdaySource({"companies": [
+            {"name": "A", "tenant": "acme", "wd": "wd1", "site": "External"},
+            {"name": "B", "url": "https://beta.wd5.myworkdayjobs.com/Careers"},
+        ]})
+        boards = source.boards()
+        assert [b["tenant"] for b in boards] == ["acme", "beta"]
+        assert boards[1]["site"] == "Careers"
+
+
+class TestKula:
+    def test_confidential_and_unlisted_jobs_are_skipped(self):
+        from jobhunter.sources.kula import KulaSource
+
+        source = KulaSource({})
+        assert source._to_job("acme", "Acme", {"id": 1, "title": "X", "listed": False}) is None
+        assert source._to_job("acme", "Acme", {"id": 2, "title": "X", "is_confidential": True}) is None
+
+    def test_offices_become_the_location(self):
+        from jobhunter.sources.kula import KulaSource
+
+        job = KulaSource({})._to_job("cashfree", "Cashfree", {
+            "id": 7, "title": "SDE 2", "listed": True,
+            "ats_job": {"offices": [{"location": "Bellandur, Karnataka, India"}],
+                        "job_description": "<p>Build things</p>"},
+        })
+        assert job.location == "Bellandur, Karnataka, India"
+        assert job.description == "Build things"
+        assert job.url.endswith("/cashfree/7")
+
+    def test_missing_date_is_left_unknown(self):
+        """Kula publishes no posting date. Unknown is honest; a fake one would let a
+        stale job pass a freshness filter."""
+        from jobhunter.sources.kula import KulaSource
+
+        job = KulaSource({})._to_job("a", "A", {"id": 1, "title": "X", "listed": True})
+        assert job.posted_at is None and job.age_days() is None
+
+
+class TestDiscovery:
+    def test_jsonld_jobposting_extracted(self):
+        from jobhunter.discovery import extract_jsonld_jobs
+
+        html = """<script type="application/ld+json">
+        {"@type":"JobPosting","title":"Support Engineer","jobLocation":"Chennai"}</script>"""
+        found = extract_jsonld_jobs(html)
+        assert len(found) == 1 and found[0]["title"] == "Support Engineer"
+
+    def test_jsonld_inside_a_graph(self):
+        from jobhunter.discovery import extract_jsonld_jobs
+
+        html = """<script type="application/ld+json">
+        {"@graph":[{"@type":"Organization"},{"@type":"JobPosting","title":"SRE"}]}</script>"""
+        assert extract_jsonld_jobs(html)[0]["title"] == "SRE"
+
+    def test_malformed_jsonld_is_ignored(self):
+        from jobhunter.discovery import extract_jsonld_jobs
+
+        assert extract_jsonld_jobs('<script type="application/ld+json">{oops</script>') == []
+
+    def test_tracker_endpoints_are_not_reported(self):
+        """Analytics and chat widgets mention 'job' constantly and would drown the
+        signal."""
+        from jobhunter.discovery import _is_noise
+
+        assert _is_noise("https://www.googleadservices.com/pagead/conversion/123")
+        assert _is_noise("https://convokraft.zoho.in/api/v1/webchat/sessions")
+        assert not _is_noise("https://careers.kula.ai/api/internal/ats_job_posts?accountName=x")
+
+    def test_job_payloads_are_recognised(self):
+        from jobhunter.discovery import _looks_like_jobs
+
+        assert _looks_like_jobs('{"jobs":[{"jobTitle":"SRE","department":"Eng"}]}')
+        assert not _looks_like_jobs('{"user":{"name":"x"},"session":"abc"}')
+
+    def test_report_renders_without_findings(self):
+        from jobhunter.discovery import ProbeReport
+
+        text = ProbeReport(url="https://acme.com/careers").to_text()
+        assert "No job data source found" in text
+
+
 class TestSourceSelection:
     def test_only_filters_sources(self):
         from jobhunter.sources import build_sources

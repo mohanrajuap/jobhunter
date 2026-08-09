@@ -303,6 +303,39 @@ sources:
     enabled: false
     companies: []
 
+  # Workday powers a large slice of enterprise hiring, Indian GCCs included, and its
+  # careers pages are JavaScript shells with no board slug — so these companies were
+  # invisible until now. Each board needs three values, all of which appear in the
+  # careers URL: https://{tenant}.{wd}.myworkdayjobs.com/{site}
+  #
+  # Don't guess them — site names vary wildly. Run:
+  #     jobhunter probe https://company.com/careers
+  # and it prints the exact block to paste here.
+  workday:
+    enabled: true
+    companies:
+      - name: BrowserStack
+        tenant: browserstack
+        wd: wd3
+        site: External
+      - name: Salesforce
+        tenant: salesforce
+        wd: wd12
+        site: External_Career_Site
+    detail_limit: 25              # how many to fetch full descriptions for
+    max_postings_per_company: 200
+    delay_seconds: 1.0
+
+  # Kula.ai — a recruiting platform used by several Indian startups. Same story as
+  # Workday: client-side page, no slug, but a clean public JSON listing behind it.
+  # The account name is the slug in the company's Kula careers URL.
+  kula:
+    enabled: true
+    companies:
+      - account: cashfree
+        name: Cashfree Payments
+    delay_seconds: 1.0
+
   # Careers pages that are NOT backed by one of the boards above.
   #
   # Be aware this route rarely pays off, and the list below is short for a reason.
