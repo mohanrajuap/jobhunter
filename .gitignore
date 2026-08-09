@@ -34,3 +34,8 @@ Thumbs.db
 # Config backups written by the app on save — these contain your real details
 config/*.bak
 *.bak
+
+# PyInstaller build output
+build/
+dist/
+*.spec
