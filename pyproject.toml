@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jobhunter"
+version = "0.1.0"
+description = "Autonomous daily job discovery and application agent"
+requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0.1",
+    "requests>=2.32.0",
+    "python-dateutil>=2.9.0",
+    "rapidfuzz>=3.9.0",
+    "beautifulsoup4>=4.12.3",
+    "pdfplumber>=0.11.0",
+    "python-docx>=1.1.2",
+    "playwright>=1.47.0",
+    "APScheduler>=3.10.4",
+    "jinja2>=3.1.4",
+]
+
+[project.scripts]
+jobhunter = "jobhunter.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jobhunter*"]
+
+[tool.setuptools.package-data]
+jobhunter = ["data/*.txt", "data/*.yaml"]

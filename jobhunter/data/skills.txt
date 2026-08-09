@@ -1,0 +1,312 @@
+# Skill lexicon used to pull keywords out of a resume and to score job descriptions.
+# One skill per line. Lines starting with '#' are comments.
+# Multi-word entries are matched as phrases; add your own niche skills freely.
+
+# --- Languages ---
+python
+java
+javascript
+typescript
+c#
+c++
+golang
+go
+rust
+ruby
+php
+scala
+kotlin
+swift
+perl
+bash
+shell scripting
+powershell
+sql
+pl/sql
+t-sql
+r
+matlab
+vba
+
+# --- Web / frontend ---
+react
+react native
+angular
+vue
+next.js
+node.js
+express
+django
+flask
+fastapi
+spring
+spring boot
+.net
+asp.net
+html
+css
+sass
+tailwind
+redux
+graphql
+rest api
+soap
+microservices
+webpack
+
+# --- Data & databases ---
+oracle
+oracle 19c
+oracle 23ai
+mysql
+postgresql
+sql server
+mongodb
+cassandra
+dynamodb
+redis
+elasticsearch
+snowflake
+databricks
+bigquery
+redshift
+teradata
+db2
+sqlite
+neo4j
+data modeling
+data warehousing
+etl
+elt
+informatica
+talend
+ssis
+dbt
+apache spark
+pyspark
+hadoop
+hive
+kafka
+airflow
+data pipeline
+power bi
+tableau
+looker
+qlik
+ssrs
+data analysis
+data engineering
+pandas
+numpy
+
+# --- Cloud & infra ---
+aws
+azure
+gcp
+google cloud
+ec2
+s3
+lambda
+cloudformation
+eks
+aks
+gke
+kubernetes
+docker
+containerization
+terraform
+ansible
+puppet
+chef
+jenkins
+gitlab ci
+github actions
+azure devops
+circleci
+argocd
+helm
+openshift
+vmware
+linux
+unix
+windows server
+active directory
+networking
+tcp/ip
+dns
+load balancing
+nginx
+apache
+iis
+tomcat
+weblogic
+websphere
+
+# --- SRE / support / observability ---
+site reliability
+sre
+devops
+incident management
+incident response
+problem management
+change management
+root cause analysis
+rca
+itil
+service now
+servicenow
+jira
+confluence
+remedy
+splunk
+datadog
+new relic
+appdynamics
+dynatrace
+grafana
+prometheus
+elk
+kibana
+logstash
+nagios
+zabbix
+pagerduty
+on-call
+monitoring
+alerting
+observability
+sla
+production support
+application support
+l1 support
+l2 support
+l3 support
+troubleshooting
+ticketing
+runbook
+disaster recovery
+high availability
+capacity planning
+performance tuning
+shell
+cron
+autosys
+control-m
+batch processing
+job scheduling
+
+# --- Security ---
+cybersecurity
+information security
+penetration testing
+vulnerability management
+siem
+soc
+iam
+oauth
+saml
+sso
+encryption
+pki
+firewall
+zero trust
+gdpr
+soc 2
+iso 27001
+pci dss
+hipaa
+
+# --- QA ---
+manual testing
+automation testing
+selenium
+cypress
+playwright
+appium
+junit
+testng
+pytest
+jmeter
+loadrunner
+postman
+api testing
+regression testing
+test automation
+qa
+sdet
+
+# --- AI / ML ---
+machine learning
+deep learning
+nlp
+natural language processing
+computer vision
+tensorflow
+pytorch
+scikit-learn
+keras
+llm
+large language models
+generative ai
+langchain
+rag
+prompt engineering
+mlops
+hugging face
+openai
+data science
+
+# --- Practices / methodology ---
+agile
+scrum
+kanban
+safe
+waterfall
+tdd
+bdd
+ci/cd
+git
+github
+gitlab
+bitbucket
+svn
+code review
+pair programming
+system design
+solution architecture
+enterprise architecture
+technical documentation
+
+# --- Business / domain ---
+banking
+fintech
+payments
+insurance
+healthcare
+telecom
+retail
+e-commerce
+supply chain
+erp
+sap
+salesforce
+workday
+oracle ebs
+peoplesoft
+mainframe
+cobol
+jcl
+cics
+vsam
+
+# --- Soft / role ---
+stakeholder management
+team leadership
+mentoring
+client communication
+requirement gathering
+business analysis
+project management
+vendor management
+escalation management
+process improvement

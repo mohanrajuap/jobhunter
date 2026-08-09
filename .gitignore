@@ -1,0 +1,32 @@
+# Secrets & personal data — NEVER commit
+.env
+config/config.yaml
+config/*.local.yaml
+resumes/
+*.pdf
+*.docx
+!docs/**/*.pdf
+
+# Runtime state
+.state/
+data/*.sqlite3
+data/*.db
+logs/
+screenshots/
+reports/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
