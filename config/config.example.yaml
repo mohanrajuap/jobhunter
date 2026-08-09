@@ -221,51 +221,94 @@ sources:
   # For every board below, the value is the company's slug on that ATS. Find it in
   # the careers-page URL, e.g. boards.greenhouse.io/SLUG, jobs.lever.co/SLUG.
   # `jobhunter doctor` tells you which slugs are live.
+  # Every slug below returned open roles when this file was written. Boards go stale
+  # when a company changes ATS, so re-run `jobhunter doctor` now and then — it lists
+  # each slug and how many roles it returned.
   greenhouse:
     enabled: true
     boards:
-      - stripe
+      # --- India-headquartered ---
+      - razorpaysoftwareprivatelimited
+      - phonepe
+      - postman
+      - groww
+      - slice
+      - turing
+      - observeai
+      - sigmoid
+      # --- global, with real India engineering offices ---
+      - cloudflare
       - databricks
-      - figma
-      - anthropic
-      - discord
+      - datadog
+      - elastic
+      - gitlab
+      - mongodb
+      - twilio
 
   lever:
     enabled: true
     companies:
-      - ro
-      - leverdemo
+      - paytm
+      - meesho
+      - zeta
+      - mindtickle
+      - hevodata
+      - epifi
+      - cred
+      - eternal        # Zomato / Blinkit group
 
   ashby:
     enabled: true
     companies:
-      - ramp
-      - linear
-      - vanta
+      - confluent
+      - navi
+      - atlan
+      - skyflow
+      - spotdraft
 
   smartrecruiters:
     enabled: true
     companies:
       - Visa
-      - Ubisoft
     detail_limit: 30              # description fetches per company (slow but needed)
     max_postings_per_company: 200
 
   workable:
-    enabled: true
-    companies:
-      - blueground
+    enabled: false
+    companies: []
 
   recruitee:
     enabled: false
     companies: []
 
-  # Any other careers page. jobhunter sniffs the underlying ATS automatically and
-  # uses its API when it finds one; otherwise it scrapes links.
-  custom_career_pages: []
+  # Companies whose careers page has no public board API behind it. jobhunter sniffs
+  # for one anyway, and falls back to reading the rendered page in the browser.
+  #
+  # These are lower yield than the board lists above — a scraped page gives a title and
+  # a link, not a description or a location — so prefer a board slug wherever a company
+  # has one. Add your own on the Career Pages tab and use its Test button first.
+  custom_career_pages:
+    - name: "Zoho"
+      url: "https://www.zoho.com/careers/"
+      default_location: "Chennai, India"
+    - name: "Freshworks"
+      url: "https://www.freshworks.com/company/careers/"
+      default_location: "Chennai, India"
+    - name: "Chargebee"
+      url: "https://www.chargebee.com/careers/"
+      default_location: "Chennai, India"
+    - name: "BrowserStack"
+      url: "https://www.browserstack.com/careers"
+      default_location: "India"
+    - name: "Juspay"
+      url: "https://juspay.io/careers"
+      default_location: "Bengaluru, India"
+    - name: "Cashfree"
+      url: "https://www.cashfree.com/careers/"
+      default_location: "Bengaluru, India"
   #  - name: "Acme Corp"
   #    url: "https://acme.com/careers"
-  #    # Optional — only needed when sniffing fails:
+  #    # Optional — only needed when detection fails:
   #    job_link_selector: "a.job-listing"
   #    default_location: "Chennai, India"
 
@@ -273,6 +316,11 @@ sources:
     max_links_per_page: 60
     fetch_descriptions: true
     delay_seconds: 1.0
+    # Re-open the page in the browser when plain HTTP finds almost nothing — which is
+    # what happens on any career site that builds its job list in JavaScript.
+    use_browser_fallback: true
+    min_jobs_before_fallback: 3
+    render_wait_ms: 3500
 
 # === APPLYING ===============================================================
 apply:
