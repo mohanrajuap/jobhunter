@@ -16,7 +16,7 @@ import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from . import notify
 from .appliers import ApplyContext, Profile, get_applier
@@ -38,6 +38,32 @@ class Pipeline:
         self.cfg = config
         self.store = store or Store(config.data_dir() / "jobhunter.sqlite3")
         self._progress = progress or (lambda _msg: None)
+        self._oracle: Any = None
+        self._oracle_tried = False
+
+    @property
+    def oracle(self) -> Any:
+        """Lazily connected Oracle mirror, or None. Connecting once per pipeline keeps
+        a dead database from stalling every single write."""
+        if not self._oracle_tried:
+            self._oracle_tried = True
+            from .db import build_sink
+
+            self._oracle = build_sink(self.cfg)
+            if self._oracle:
+                self._say(f"Oracle mirror connected ({self._oracle.count()} rows on record)")
+        return self._oracle
+
+    def _mirror(self, outcome: Outcome, match: MatchResult | None = None, mode: str = "") -> None:
+        sink = self.oracle
+        if sink is not None:
+            sink.record(outcome, match, mode)
+
+    def record_manual_application(self, job: Job, note: str = "") -> Outcome:
+        """Mark a job you applied to yourself — from the UI's 'Mark applied' button."""
+        outcome = self.store.mark_applied_manually(job, note)
+        self._mirror(outcome, None, "manual-by-user")
+        return outcome
 
     def _say(self, message: str) -> None:
         log.info(message)
@@ -71,11 +97,16 @@ class Pipeline:
 
     # --- phase 2: discovery ---
 
-    def discover(self, queries: list[str], browser: BrowserSession | None) -> tuple[list[Job], dict[str, str]]:
+    def discover(
+        self,
+        queries: list[str],
+        browser: BrowserSession | None,
+        only: list[str] | None = None,
+    ) -> tuple[list[Job], dict[str, str]]:
         jobs: list[Job] = []
         errors: dict[str, str] = {}
 
-        for source in build_sources(self.cfg, browser=browser):
+        for source in build_sources(self.cfg, browser=browser, only=only):
             try:
                 self._say(f"Searching {source.name}…")
                 found = source.fetch(queries)
@@ -114,18 +145,21 @@ class Pipeline:
         return fresh
 
     def discover_and_match(
-        self, browser: BrowserSession | None = None, include_seen: bool = False
+        self,
+        browser: BrowserSession | None = None,
+        include_seen: bool = False,
+        only: list[str] | None = None,
     ) -> tuple[list[MatchResult], dict[str, str]]:
         """Search and score without applying. This is what the GUI's Search button runs.
 
         `include_seen` keeps already-applied jobs in the list so the GUI can label them
-        rather than hiding them.
+        rather than hiding them. `only` restricts which sources run.
         """
         roles = self.load_roles()
         queries = self.build_queries(roles)
         scorer = MultiRoleScorer(self.cfg, roles)
 
-        jobs, errors = self.discover(queries, browser)
+        jobs, errors = self.discover(queries, browser, only=only)
         candidates = jobs if include_seen else self._filter_seen(jobs)
         for job in jobs:
             self.store.record_job(job)
@@ -148,6 +182,7 @@ class Pipeline:
             dry_run=dry_run,
             submit_timeout_ms=int(self.cfg.get("apply.timeout_seconds", 30)) * 1000,
             screenshot_on_failure=bool(self.cfg.get("apply.screenshot_on_failure", True)),
+            mode=str(self.cfg.get("apply.mode", "auto")),
         )
 
     def apply_one(self, match: MatchResult, ctx: ApplyContext) -> Outcome:
@@ -159,6 +194,7 @@ class Pipeline:
                 reason=f"no applier supports ATS '{match.job.ats}'",
             )
             self.store.record_outcome(outcome)
+            self._mirror(outcome, match, ctx.mode)
             return outcome
 
         # Swap in the resume chosen for this job's role.
@@ -173,6 +209,7 @@ class Pipeline:
         outcome = applier.apply(match.job, job_ctx)
         outcome.score = match.score
         self.store.record_outcome(outcome)
+        self._mirror(outcome, match, ctx.mode)
         self._say(f"  → {outcome.status.value}: {outcome.reason or 'ok'}")
         return outcome
 

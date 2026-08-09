@@ -1,7 +1,8 @@
 """Desktop UI.
 
 Four tabs:
-  Search          — find jobs, see which you've already applied to, apply to a selection
+  Search          — pick sources and browser, find jobs, see what you've already applied
+                    to, apply automatically or fill-and-review, mark manual applications
   My Details      — the saved form values used to fill company application forms
   Roles & Resumes — multiple roles, each with one or more resumes
   Activity        — live log
@@ -13,7 +14,6 @@ reads from a queue.
 from __future__ import annotations
 
 import logging
-import queue
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -21,9 +21,12 @@ from typing import Any
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from ..browser import detect_browsers
 from ..config import Config, ConfigError, load_config
 from ..models import MatchResult, Status
+from ..sources import ALL_SOURCE_NAMES
 from ..store import Store
+from . import theme
 from .worker import QueueLogHandler, Worker
 
 log = logging.getLogger(__name__)
@@ -32,13 +35,31 @@ STATUS_LABELS = {
     "new": "New",
     Status.APPLIED.value: "✓ Applied",
     Status.ALREADY_APPLIED.value: "✓ Applied",
-    Status.MANUAL.value: "⚠ Manual",
+    Status.APPLIED_MANUALLY.value: "✓ You applied",
+    Status.FILLED.value: "◐ Filled — review",
+    Status.MANUAL.value: "⚠ Needs you",
     Status.FAILED.value: "⚠ Failed",
     Status.DRY_RUN.value: "· Dry run",
     Status.SKIPPED.value: "· Skipped",
 }
 
-# Fields of the "predefined form" — label, config key, and width hint.
+SOURCE_LABELS = {
+    "naukri": "Naukri",
+    "linkedin": "LinkedIn",
+    "greenhouse": "Greenhouse boards",
+    "lever": "Lever boards",
+    "ashby": "Ashby boards",
+    "smartrecruiters": "SmartRecruiters",
+    "workable": "Workable",
+    "recruitee": "Recruitee",
+    "career_pages": "Company career pages",
+}
+
+APPLY_MODES = {
+    "Automatic — fill and submit": "auto",
+    "Manual review — fill, I submit": "manual",
+}
+
 PROFILE_FIELDS: list[tuple[str, str]] = [
     ("Full name", "profile.full_name"),
     ("First name", "profile.first_name"),
@@ -74,14 +95,18 @@ class JobHunterApp(tk.Tk):
     def __init__(self, config_path: str | None = None):
         super().__init__()
         self.title("JobHunter")
-        self.geometry("1180x760")
-        self.minsize(900, 600)
+        self.geometry("1320x840")
+        self.minsize(1040, 680)
 
+        self.style = theme.apply_theme(self)
         self.worker = Worker()
         self.matches: dict[str, MatchResult] = {}
         self.config_path = config_path
         self.cfg: Config | None = None
         self.store: Store | None = None
+        self._pipeline: Any = None
+
+        self.browsers = detect_browsers()
 
         self._build_ui()
         self._load_config(initial=True)
@@ -101,9 +126,11 @@ class JobHunterApp(tk.Tk):
         try:
             self.cfg = load_config(self.config_path)
             self.store = Store(self.cfg.data_dir() / "jobhunter.sqlite3")
+            self._pipeline = None
             self._set_status(f"Loaded {self.cfg.path}")
             self._populate_profile()
             self._populate_roles()
+            self._populate_run_settings()
         except ConfigError as exc:
             self.cfg = None
             self._set_status(f"No config: {exc}")
@@ -114,9 +141,22 @@ class JobHunterApp(tk.Tk):
                     "then fill in the 'My Details' and 'Roles & Resumes' tabs.",
                 )
 
+    def pipeline(self) -> Any:
+        """Shared Pipeline instance — also the path Oracle writes go through."""
+        if self._pipeline is None and self.cfg is not None:
+            from ..pipeline import Pipeline
+
+            self._pipeline = Pipeline(self.cfg, store=self.store)
+        return self._pipeline
+
     def _build_ui(self) -> None:
+        theme.header(
+            self, "JobHunter",
+            "Find matching jobs, apply automatically, and keep track of what you did by hand",
+        ).pack(fill="x")
+
         self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=(10, 0))
 
         self._build_search_tab()
         self._build_profile_tab()
@@ -124,10 +164,10 @@ class JobHunterApp(tk.Tk):
         self._build_log_tab()
 
         bar = ttk.Frame(self)
-        bar.pack(fill="x", padx=10, pady=6)
+        bar.pack(fill="x", padx=14, pady=8)
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(bar, textvariable=self.status_var, foreground="#444").pack(side="left")
-        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=170)
+        ttk.Label(bar, textvariable=self.status_var, style="Status.TLabel").pack(side="left")
+        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=190)
         self.progress.pack(side="right")
 
     # --- tab 1: search ---
@@ -136,49 +176,87 @@ class JobHunterApp(tk.Tk):
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="  Search  ")
 
-        controls = ttk.Frame(tab)
-        controls.pack(fill="x", padx=10, pady=10)
+        # --- row 1: where to look ---
+        row1 = ttk.Frame(tab)
+        row1.pack(fill="x", padx=14, pady=(14, 6))
 
-        self.search_btn = ttk.Button(controls, text="🔍  Search jobs", command=self.on_search)
+        self.search_btn = ttk.Button(row1, text="🔍  Search jobs", style="Primary.TButton",
+                                     command=self.on_search)
         self.search_btn.pack(side="left")
 
-        self.apply_sel_btn = ttk.Button(
-            controls, text="Apply to selected", command=self.on_apply_selected, state="disabled"
-        )
-        self.apply_sel_btn.pack(side="left", padx=(8, 0))
+        ttk.Label(row1, text="Sources").pack(side="left", padx=(18, 6))
+        self.source_vars: dict[str, tk.BooleanVar] = {
+            name: tk.BooleanVar(value=True) for name in ALL_SOURCE_NAMES
+        }
+        self.source_button = ttk.Menubutton(row1, text="All sources")
+        source_menu = tk.Menu(self.source_button, tearoff=False)
+        for name in ALL_SOURCE_NAMES:
+            source_menu.add_checkbutton(
+                label=SOURCE_LABELS.get(name, name), variable=self.source_vars[name],
+                command=self._update_source_button,
+            )
+        source_menu.add_separator()
+        source_menu.add_command(label="Select all", command=lambda: self._set_all_sources(True))
+        source_menu.add_command(label="Select none", command=lambda: self._set_all_sources(False))
+        self.source_button.configure(menu=source_menu)
+        self.source_button.pack(side="left")
 
-        self.apply_all_btn = ttk.Button(
-            controls, text="Apply to all new", command=self.on_apply_all, state="disabled"
+        ttk.Label(row1, text="Browser").pack(side="left", padx=(18, 6))
+        self.browser_var = tk.StringVar()
+        self.browser_box = ttk.Combobox(
+            row1, textvariable=self.browser_var, state="readonly", width=24,
+            values=[b.label for b in self.browsers],
         )
-        self.apply_all_btn.pack(side="left", padx=(8, 0))
+        self.browser_box.pack(side="left")
+
+        self.use_profile_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            row1, text="Use my logged-in profile", variable=self.use_profile_var,
+            command=self._warn_about_profile,
+        ).pack(side="left", padx=(10, 0))
+
+        # --- row 2: how to apply ---
+        row2 = ttk.Frame(tab)
+        row2.pack(fill="x", padx=14, pady=(2, 8))
+
+        ttk.Label(row2, text="Apply mode").pack(side="left", padx=(0, 6))
+        self.apply_mode_var = tk.StringVar(value=list(APPLY_MODES)[0])
+        ttk.Combobox(row2, textvariable=self.apply_mode_var, state="readonly", width=28,
+                     values=list(APPLY_MODES)).pack(side="left")
 
         self.dry_run_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            controls, text="Dry run (fill forms, don't submit)", variable=self.dry_run_var
-        ).pack(side="left", padx=(16, 0))
+        ttk.Checkbutton(row2, text="Dry run (never submit)", variable=self.dry_run_var).pack(
+            side="left", padx=(14, 0))
 
-        self.hide_applied_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            controls, text="Hide already applied", variable=self.hide_applied_var,
-            command=self._refresh_tree,
-        ).pack(side="left", padx=(12, 0))
+        self.apply_sel_btn = ttk.Button(row2, text="▶  Apply to selected", style="Accent.TButton",
+                                        command=self.on_apply_selected, state="disabled")
+        self.apply_sel_btn.pack(side="left", padx=(20, 0))
 
-        ttk.Button(controls, text="Stop", command=self.worker.cancel).pack(side="right")
+        self.apply_all_btn = ttk.Button(row2, text="Apply to all new", command=self.on_apply_all,
+                                        state="disabled")
+        self.apply_all_btn.pack(side="left", padx=(8, 0))
 
-        filter_row = ttk.Frame(tab)
-        filter_row.pack(fill="x", padx=10)
-        ttk.Label(filter_row, text="Filter:").pack(side="left")
+        ttk.Button(row2, text="Stop", style="Warn.TButton", command=self.worker.cancel).pack(side="right")
+
+        # --- row 3: filter ---
+        row3 = ttk.Frame(tab)
+        row3.pack(fill="x", padx=14)
+        ttk.Label(row3, text="Filter").pack(side="left")
         self.filter_var = tk.StringVar()
         self.filter_var.trace_add("write", lambda *_: self._refresh_tree())
-        ttk.Entry(filter_row, textvariable=self.filter_var, width=44).pack(side="left", padx=6)
+        ttk.Entry(row3, textvariable=self.filter_var, width=40).pack(side="left", padx=8)
+        self.hide_applied_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row3, text="Hide already applied", variable=self.hide_applied_var,
+                        command=self._refresh_tree).pack(side="left", padx=(6, 0))
         self.count_var = tk.StringVar(value="No results yet")
-        ttk.Label(filter_row, textvariable=self.count_var, foreground="#666").pack(side="left", padx=12)
+        ttk.Label(row3, textvariable=self.count_var, style="Muted.TLabel").pack(side="left", padx=14)
 
+        # --- results grid ---
         columns = ("status", "score", "title", "company", "location", "role", "resume", "source")
-        widths = (92, 55, 300, 150, 175, 130, 110, 90)
+        widths = (120, 58, 320, 165, 190, 135, 115, 100)
 
-        wrap = ttk.Frame(tab)
-        wrap.pack(fill="both", expand=True, padx=10, pady=10)
+        wrap = ttk.Frame(tab, style="Card.TFrame")
+        wrap.pack(fill="both", expand=True, padx=14, pady=10)
 
         self.tree = ttk.Treeview(wrap, columns=columns, show="headings", selectmode="extended")
         for col, width in zip(columns, widths):
@@ -190,15 +268,67 @@ class JobHunterApp(tk.Tk):
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        self.tree.tag_configure("applied", background="#e8f5e9")
-        self.tree.tag_configure("manual", background="#fff4e5")
-        self.tree.tag_configure("new", background="#ffffff")
+        self.tree.tag_configure("applied", background=theme.ROW_APPLIED)
+        self.tree.tag_configure("manual", background=theme.ROW_MANUAL)
+        self.tree.tag_configure("filled", background=theme.ROW_FILLED)
+        self.tree.tag_configure("new", background=theme.ROW_NEW)
 
         self.tree.bind("<Double-1>", self._open_selected_url)
+        self.tree.bind("<Button-3>", self._show_context_menu)
+
+        self.row_menu = tk.Menu(self, tearoff=False)
+        self.row_menu.add_command(label="Open posting in browser", command=self._open_selected_url)
+        self.row_menu.add_separator()
+        self.row_menu.add_command(label="✓  Mark as applied", command=self.on_mark_applied)
+        self.row_menu.add_command(label="↩  Mark as not applied", command=self.on_unmark_applied)
+
+        # --- footer actions ---
+        footer = ttk.Frame(tab)
+        footer.pack(fill="x", padx=14, pady=(0, 12))
+        ttk.Button(footer, text="✓  I applied to this myself", style="Accent.TButton",
+                   command=self.on_mark_applied).pack(side="left")
+        ttk.Button(footer, text="↩  Not applied", command=self.on_unmark_applied).pack(
+            side="left", padx=8)
+        ttk.Button(footer, text="Open posting", style="Ghost.TButton",
+                   command=self._open_selected_url).pack(side="left", padx=8)
         ttk.Label(
-            tab, text="Double-click a row to open the posting in your browser.",
-            foreground="#666",
-        ).pack(anchor="w", padx=10, pady=(0, 8))
+            footer,
+            text="Marking a job as applied saves it to the database, so it is never applied to twice.",
+            style="Muted.TLabel",
+        ).pack(side="left", padx=16)
+
+    def _set_all_sources(self, value: bool) -> None:
+        for var in self.source_vars.values():
+            var.set(value)
+        self._update_source_button()
+
+    def _update_source_button(self) -> None:
+        chosen = self.selected_sources()
+        if len(chosen) == len(self.source_vars):
+            label = "All sources"
+        elif not chosen:
+            label = "No sources!"
+        elif len(chosen) <= 2:
+            label = ", ".join(SOURCE_LABELS.get(s, s) for s in chosen)
+        else:
+            label = f"{len(chosen)} sources"
+        self.source_button.configure(text=label)
+
+    def selected_sources(self) -> list[str]:
+        return [name for name, var in self.source_vars.items() if var.get()]
+
+    def _warn_about_profile(self) -> None:
+        if not self.use_profile_var.get():
+            return
+        label = self.browser_var.get() or "that browser"
+        messagebox.showinfo(
+            "Using your real browser profile",
+            f"JobHunter will use your existing {label} profile, so sites you're already "
+            "signed into (Naukri, LinkedIn) stay signed in.\n\n"
+            f"{label} must be COMPLETELY CLOSED while a search or apply runs — including "
+            "any icon in the system tray. Chromium browsers will not share a profile "
+            "between two programs.",
+        )
 
     # --- tab 2: the predefined form ---
 
@@ -210,22 +340,22 @@ class JobHunterApp(tk.Tk):
             tab,
             text="These values are typed into company application forms. Keep them accurate — "
                  "they are submitted as fact on your behalf.",
-            foreground="#555", wraplength=1050,
-        ).pack(anchor="w", padx=14, pady=(12, 8))
+            style="Muted.TLabel", wraplength=1150,
+        ).pack(anchor="w", padx=16, pady=(14, 8))
 
-        canvas = tk.Canvas(tab, highlightthickness=0)
+        canvas = tk.Canvas(tab, highlightthickness=0, bg=theme.BG)
         scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas)
         inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True, padx=(14, 0))
+        canvas.pack(side="left", fill="both", expand=True, padx=(16, 0))
         scrollbar.pack(side="right", fill="y")
 
         self.profile_vars: dict[str, tk.StringVar] = {}
 
-        grid = ttk.LabelFrame(inner, text="Personal details")
-        grid.pack(fill="x", pady=(0, 12), padx=(0, 14))
+        grid = ttk.Labelframe(inner, text="Personal details", padding=8)
+        grid.pack(fill="x", pady=(0, 12), padx=(0, 16))
         for index, (label, key) in enumerate(PROFILE_FIELDS):
             row, col = divmod(index, 2)
             cell = ttk.Frame(grid)
@@ -235,8 +365,8 @@ class JobHunterApp(tk.Tk):
             self.profile_vars[key] = var
             ttk.Entry(cell, textvariable=var, width=38).pack(side="left")
 
-        choices = ttk.LabelFrame(inner, text="Standard screening answers")
-        choices.pack(fill="x", pady=(0, 12), padx=(0, 14))
+        choices = ttk.Labelframe(inner, text="Standard screening answers", padding=8)
+        choices.pack(fill="x", pady=(0, 12), padx=(0, 16))
         for index, (label, key, options) in enumerate(CHOICE_FIELDS):
             row, col = divmod(index, 2)
             cell = ttk.Frame(choices)
@@ -244,29 +374,37 @@ class JobHunterApp(tk.Tk):
             ttk.Label(cell, text=label, width=22).pack(side="left")
             var = tk.StringVar()
             self.profile_vars[key] = var
-            ttk.Combobox(cell, textvariable=var, values=options, width=35, state="readonly").pack(side="left")
+            ttk.Combobox(cell, textvariable=var, values=options, width=35,
+                         state="readonly").pack(side="left")
 
-        files = ttk.LabelFrame(inner, text="Default files")
-        files.pack(fill="x", pady=(0, 12), padx=(0, 14))
+        files = ttk.Labelframe(inner, text="Default files", padding=8)
+        files.pack(fill="x", pady=(0, 12), padx=(0, 16))
         self._file_row(files, "Default resume", "profile.resume_path")
         self._file_row(files, "Cover letter file", "profile.cover_letter_path")
 
-        answers = ttk.LabelFrame(inner, text="Custom question answers  (one per line:  question fragment = answer)")
-        answers.pack(fill="both", expand=True, pady=(0, 12), padx=(0, 14))
+        answers = ttk.Labelframe(
+            inner, text="Custom question answers   (one per line:  question fragment = answer)",
+            padding=8,
+        )
+        answers.pack(fill="both", expand=True, pady=(0, 12), padx=(0, 16))
         ttk.Label(
             answers,
-            text="The left side is matched as a substring of the question on the form. "
-                 "Anything a form requires that isn't answered here sends the job to your manual list "
-                 "instead of being guessed at.",
-            foreground="#555", wraplength=980,
-        ).pack(anchor="w", padx=10, pady=(6, 4))
-        self.answers_text = tk.Text(answers, height=10, wrap="word")
-        self.answers_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+            text="The left side is matched as a substring of the question on the form. Anything a "
+                 "form requires that isn't answered here sends the job to your manual list instead "
+                 "of being guessed at.",
+            style="Muted.TLabel", wraplength=1050,
+        ).pack(anchor="w", padx=6, pady=(2, 6))
+        self.answers_text = tk.Text(answers, height=10, wrap="word", relief="flat",
+                                    bg=theme.CARD, fg=theme.INK, insertbackground=theme.INK,
+                                    highlightthickness=1, highlightbackground=theme.LINE)
+        self.answers_text.pack(fill="both", expand=True, padx=6, pady=(0, 8))
 
         buttons = ttk.Frame(inner)
-        buttons.pack(fill="x", pady=(0, 20), padx=(0, 14))
-        ttk.Button(buttons, text="💾  Save details", command=self.on_save_profile).pack(side="left")
-        ttk.Button(buttons, text="Reload from file", command=lambda: self._load_config()).pack(side="left", padx=8)
+        buttons.pack(fill="x", pady=(0, 22), padx=(0, 16))
+        ttk.Button(buttons, text="💾  Save details", style="Primary.TButton",
+                   command=self.on_save_profile).pack(side="left")
+        ttk.Button(buttons, text="Reload from file", command=lambda: self._load_config()).pack(
+            side="left", padx=8)
 
     def _file_row(self, parent: tk.Widget, label: str, key: str) -> None:
         row = ttk.Frame(parent)
@@ -296,23 +434,27 @@ class JobHunterApp(tk.Tk):
             text="Each role has its own titles and resumes. Every job is scored against every role; "
                  "the best-matching role decides which resume gets uploaded. Give a role several "
                  "resumes and each job gets whichever variant its description matches best.",
-            foreground="#555", wraplength=1050,
-        ).pack(anchor="w", padx=14, pady=(12, 8))
+            style="Muted.TLabel", wraplength=1150,
+        ).pack(anchor="w", padx=16, pady=(14, 8))
 
         body = ttk.Frame(tab)
-        body.pack(fill="both", expand=True, padx=14, pady=(0, 10))
+        body.pack(fill="both", expand=True, padx=16, pady=(0, 12))
 
         left = ttk.Frame(body)
-        left.pack(side="left", fill="y", padx=(0, 14))
-        ttk.Label(left, text="Roles").pack(anchor="w")
-        self.roles_list = tk.Listbox(left, width=26, height=20, exportselection=False)
+        left.pack(side="left", fill="y", padx=(0, 16))
+        ttk.Label(left, text="Roles", style="Section.TLabel").pack(anchor="w")
+        self.roles_list = tk.Listbox(left, width=26, height=20, exportselection=False,
+                                     relief="flat", bg=theme.CARD, fg=theme.INK,
+                                     selectbackground=theme.PRIMARY, selectforeground="#fff",
+                                     highlightthickness=1, highlightbackground=theme.LINE)
         self.roles_list.pack(fill="y", expand=True)
         self.roles_list.bind("<<ListboxSelect>>", lambda _e: self._show_role())
 
         role_btns = ttk.Frame(left)
         role_btns.pack(fill="x", pady=6)
         ttk.Button(role_btns, text="Add", width=8, command=self.on_add_role).pack(side="left")
-        ttk.Button(role_btns, text="Delete", width=8, command=self.on_delete_role).pack(side="left", padx=4)
+        ttk.Button(role_btns, text="Delete", width=8, command=self.on_delete_role).pack(
+            side="left", padx=4)
 
         right = ttk.Frame(body)
         right.pack(side="left", fill="both", expand=True)
@@ -323,18 +465,22 @@ class JobHunterApp(tk.Tk):
         self.role_name_var = tk.StringVar()
         ttk.Entry(name_row, textvariable=self.role_name_var, width=42).pack(side="left")
         self.role_enabled_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(name_row, text="Enabled", variable=self.role_enabled_var).pack(side="left", padx=12)
+        ttk.Checkbutton(name_row, text="Enabled", variable=self.role_enabled_var).pack(
+            side="left", padx=12)
 
-        ttk.Label(right, text="Job titles to look for (one per line)").pack(anchor="w")
-        self.role_titles_text = tk.Text(right, height=6, wrap="word")
-        self.role_titles_text.pack(fill="x", pady=(2, 10))
+        ttk.Label(right, text="Job titles to look for (one per line)",
+                  style="Section.TLabel").pack(anchor="w")
+        self.role_titles_text = self._text(right, 6)
 
-        ttk.Label(right, text="Extra keywords for this role (one per line)").pack(anchor="w")
-        self.role_keywords_text = tk.Text(right, height=5, wrap="word")
-        self.role_keywords_text.pack(fill="x", pady=(2, 10))
+        ttk.Label(right, text="Extra keywords for this role (one per line)",
+                  style="Section.TLabel").pack(anchor="w")
+        self.role_keywords_text = self._text(right, 5)
 
-        ttk.Label(right, text="Resumes for this role").pack(anchor="w")
-        self.role_resumes_list = tk.Listbox(right, height=6)
+        ttk.Label(right, text="Resumes for this role", style="Section.TLabel").pack(anchor="w")
+        self.role_resumes_list = tk.Listbox(right, height=6, relief="flat", bg=theme.CARD,
+                                            fg=theme.INK, selectbackground=theme.PRIMARY,
+                                            selectforeground="#fff", highlightthickness=1,
+                                            highlightbackground=theme.LINE)
         self.role_resumes_list.pack(fill="x", pady=(2, 4))
 
         resume_btns = ttk.Frame(right)
@@ -344,24 +490,76 @@ class JobHunterApp(tk.Tk):
 
         save_row = ttk.Frame(right)
         save_row.pack(fill="x", pady=14)
-        ttk.Button(save_row, text="💾  Save roles", command=self.on_save_roles).pack(side="left")
-        ttk.Button(save_row, text="Apply changes to this role", command=self._capture_role).pack(side="left", padx=8)
+        ttk.Button(save_row, text="💾  Save roles", style="Primary.TButton",
+                   command=self.on_save_roles).pack(side="left")
+        ttk.Button(save_row, text="Apply changes to this role",
+                   command=self._capture_role).pack(side="left", padx=8)
 
         self._roles_data: list[dict[str, Any]] = []
         self._current_role: int | None = None
+
+    def _text(self, parent: tk.Widget, height: int) -> tk.Text:
+        widget = tk.Text(parent, height=height, wrap="word", relief="flat", bg=theme.CARD,
+                         fg=theme.INK, insertbackground=theme.INK, highlightthickness=1,
+                         highlightbackground=theme.LINE)
+        widget.pack(fill="x", pady=(2, 10))
+        return widget
 
     # --- tab 4: activity ---
 
     def _build_log_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="  Activity  ")
-        self.log_text = tk.Text(tab, wrap="word", state="disabled", height=30)
+        self.log_text = tk.Text(tab, wrap="word", state="disabled", height=30, relief="flat",
+                                bg="#141a2e", fg="#c9d3f0", insertbackground="#c9d3f0",
+                                font=("Consolas", 9))
         vsb = ttk.Scrollbar(tab, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=vsb.set)
-        self.log_text.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
-        vsb.pack(side="right", fill="y", pady=10)
+        self.log_text.pack(side="left", fill="both", expand=True, padx=(14, 0), pady=14)
+        vsb.pack(side="right", fill="y", pady=14)
+        self.log_text.tag_configure("warn", foreground="#ffc078")
+        self.log_text.tag_configure("err", foreground="#ff8787")
+        self.log_text.tag_configure("ok", foreground="#69db7c")
 
     # --- config <-> widgets ---
+
+    def _populate_run_settings(self) -> None:
+        """Seed the Search-tab controls from config."""
+        if not self.cfg:
+            return
+        key = str(self.cfg.get("apply.browser", "") or "").lower()
+        chosen = next((b for b in self.browsers if b.key == key), None)
+        self.browser_var.set(chosen.label if chosen else (self.browsers[0].label if self.browsers else ""))
+        self.use_profile_var.set(bool(self.cfg.get("apply.use_existing_profile", False)))
+        self.dry_run_var.set(bool(self.cfg.get("apply.dry_run", True)))
+
+        mode = str(self.cfg.get("apply.mode", "auto"))
+        for label, value in APPLY_MODES.items():
+            if value == mode:
+                self.apply_mode_var.set(label)
+                break
+
+        for name, var in self.source_vars.items():
+            if name == "career_pages":
+                var.set(bool(self.cfg.get("sources.custom_career_pages", [])))
+            else:
+                var.set(bool(self.cfg.get(f"sources.{name}.enabled", False)))
+        self._update_source_button()
+
+    def _push_run_settings(self) -> None:
+        """Copy the Search-tab controls into the in-memory config before a run.
+
+        Deliberately not saved to disk — these are per-run choices, and writing the
+        file on every click would fight with hand-edited config.
+        """
+        if not self.cfg:
+            return
+        chosen = next((b for b in self.browsers if b.label == self.browser_var.get()), None)
+        if chosen:
+            self.cfg.set("apply.browser", chosen.key)
+        self.cfg.set("apply.use_existing_profile", bool(self.use_profile_var.get()))
+        self.cfg.set("apply.dry_run", bool(self.dry_run_var.get()))
+        self.cfg.set("apply.mode", APPLY_MODES.get(self.apply_mode_var.get(), "auto"))
 
     def _populate_profile(self) -> None:
         if not self.cfg:
@@ -398,7 +596,6 @@ class JobHunterApp(tk.Tk):
             if key.strip():
                 answers[key.strip()] = value.strip()
         self.cfg.set("profile.answers", answers)
-
         self._save_config("Details saved")
 
     def _populate_roles(self) -> None:
@@ -406,7 +603,6 @@ class JobHunterApp(tk.Tk):
             return
         roles = self.cfg.get("roles", []) or []
         if not roles:
-            # Present the flat search.roles form as a single editable role.
             roles = [{
                 "name": "Default",
                 "titles": list(self.cfg.get("search.roles", []) or []),
@@ -436,13 +632,10 @@ class JobHunterApp(tk.Tk):
 
         self.role_name_var.set(role.get("name", ""))
         self.role_enabled_var.set(bool(role.get("enabled", True)))
-
         self.role_titles_text.delete("1.0", "end")
         self.role_titles_text.insert("1.0", "\n".join(role.get("titles", []) or []))
-
         self.role_keywords_text.delete("1.0", "end")
         self.role_keywords_text.insert("1.0", "\n".join(role.get("keywords", []) or []))
-
         self._refresh_resume_list(role)
 
     def _refresh_resume_list(self, role: dict) -> None:
@@ -454,7 +647,6 @@ class JobHunterApp(tk.Tk):
             self.role_resumes_list.insert("end", f"{label or Path(path).stem}  —  {path}{exists}")
 
     def _capture_role(self) -> None:
-        """Copy the editor widgets back into the in-memory role."""
         if self._current_role is None:
             return
         role = self._roles_data[self._current_role]
@@ -466,7 +658,8 @@ class JobHunterApp(tk.Tk):
         self._set_status(f"Role '{role['name']}' updated (not yet saved)")
 
     def on_add_role(self) -> None:
-        self._roles_data.append({"name": "New role", "titles": [], "keywords": [], "resumes": [], "enabled": True})
+        self._roles_data.append({"name": "New role", "titles": [], "keywords": [],
+                                 "resumes": [], "enabled": True})
         self._refresh_roles_list()
         self.roles_list.selection_clear(0, "end")
         self.roles_list.selection_set(len(self._roles_data) - 1)
@@ -514,9 +707,8 @@ class JobHunterApp(tk.Tk):
         cleaned = []
         for role in self._roles_data:
             if not role.get("titles"):
-                messagebox.showerror(
-                    "Missing titles", f"Role '{role.get('name')}' has no job titles."
-                )
+                messagebox.showerror("Missing titles",
+                                     f"Role '{role.get('name')}' has no job titles.")
                 return
             cleaned.append({
                 "name": role.get("name", "unnamed"),
@@ -535,9 +727,9 @@ class JobHunterApp(tk.Tk):
         try:
             target = self.cfg.path
             if target is None or target.name.endswith("example.yaml"):
-                # Never overwrite the shipped example — branch to the real config.
                 target = Path("config/config.yaml")
             saved = self.cfg.save(target)
+            self._pipeline = None
             self._set_status(f"{message} → {saved}")
             messagebox.showinfo("Saved", f"{message}\n\nWritten to {saved}\n"
                                          f"(previous version kept as {saved.name}.bak)")
@@ -554,20 +746,24 @@ class JobHunterApp(tk.Tk):
             messagebox.showinfo("Busy", "A task is already running.")
             return
 
+        sources = self.selected_sources()
+        if not sources:
+            messagebox.showerror("No sources", "Pick at least one source from the Sources menu.")
+            return
+
         problems = self.cfg.validate()
         blocking = [p for p in problems if "resume" in p.lower() or "Nothing to search" in p]
         if blocking:
             messagebox.showerror(
                 "Configuration problem",
-                "\n".join(blocking)
-                + "\n\nFix this on the Roles & Resumes tab, then Save roles.",
+                "\n".join(blocking) + "\n\nFix this on the Roles & Resumes tab, then Save roles.",
             )
             return
 
-        # Stale resume paths are survivable — say so in the log and carry on.
         for warning in self.cfg.warnings():
             self._append_log(f"NOTE: {warning}")
 
+        self._push_run_settings()
         self._begin("Searching…")
         self.tree.delete(*self.tree.get_children())
         self.matches.clear()
@@ -579,13 +775,14 @@ class JobHunterApp(tk.Tk):
             from ..pipeline import Pipeline
 
             pipeline = Pipeline(cfg, progress=lambda m: worker.send("progress", m))
-            needs_browser = cfg.get("sources.naukri.enabled", False)
+            needs_browser = "naukri" in sources and cfg.get("sources.naukri.enabled", False)
 
             if needs_browser:
                 with browser_from_config(cfg) as browser:
-                    matches, errors = pipeline.discover_and_match(browser, include_seen=True)
+                    matches, errors = pipeline.discover_and_match(
+                        browser, include_seen=True, only=sources)
             else:
-                matches, errors = pipeline.discover_and_match(None, include_seen=True)
+                matches, errors = pipeline.discover_and_match(None, include_seen=True, only=sources)
 
             worker.send("results", (matches, errors))
 
@@ -595,11 +792,8 @@ class JobHunterApp(tk.Tk):
         matches, errors = payload
         self.matches = {f"m{i}": m for i, m in enumerate(matches)}
         self._refresh_tree()
-
-        if errors:
-            self._append_log("Some sources failed:")
-            for name, err in errors.items():
-                self._append_log(f"  ! {name}: {err}")
+        for name, err in errors.items():
+            self._append_log(f"  ! source '{name}' failed: {err}", "warn")
 
         state = "normal" if matches else "disabled"
         self.apply_sel_btn.configure(state=state)
@@ -609,8 +803,11 @@ class JobHunterApp(tk.Tk):
         if not self.store:
             return "new", "new"
         status, _, _ = self.store.status_for(match.job)
-        if status in (Status.APPLIED.value, Status.ALREADY_APPLIED.value):
+        if status in (Status.APPLIED.value, Status.ALREADY_APPLIED.value,
+                      Status.APPLIED_MANUALLY.value):
             return status, "applied"
+        if status == Status.FILLED.value:
+            return status, "filled"
         if status in (Status.MANUAL.value, Status.FAILED.value):
             return status, "manual"
         return status, "new"
@@ -619,12 +816,14 @@ class JobHunterApp(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         needle = self.filter_var.get().strip().lower()
         hide_applied = self.hide_applied_var.get()
-        shown = 0
+        shown = applied = 0
 
         for iid, match in self.matches.items():
             status, tag = self._row_status(match)
-            if hide_applied and tag == "applied":
-                continue
+            if tag == "applied":
+                applied += 1
+                if hide_applied:
+                    continue
             job = match.job
             haystack = f"{job.title} {job.company} {job.location} {match.role_name}".lower()
             if needle and needle not in haystack:
@@ -645,7 +844,6 @@ class JobHunterApp(tk.Tk):
             )
             shown += 1
 
-        applied = sum(1 for m in self.matches.values() if self._row_status(m)[1] == "applied")
         self.count_var.set(f"{shown} shown · {len(self.matches)} matched · {applied} already applied")
 
     def _sort_by(self, column: str) -> None:
@@ -654,16 +852,66 @@ class JobHunterApp(tk.Tk):
         for index, (_value, iid) in enumerate(rows):
             self.tree.move(iid, "", index)
 
+    def _show_context_menu(self, event: Any) -> None:
+        iid = self.tree.identify_row(event.y)
+        if iid:
+            if iid not in self.tree.selection():
+                self.tree.selection_set(iid)
+            self.row_menu.tk_popup(event.x_root, event.y_root)
+
     def _open_selected_url(self, _event: Any = None) -> None:
         for iid in self.tree.selection():
             match = self.matches.get(iid)
             if match:
                 webbrowser.open(match.job.target_url)
 
+    # --- marking manual applications ---
+
+    def _selected_matches(self) -> list[MatchResult]:
+        return [self.matches[iid] for iid in self.tree.selection() if iid in self.matches]
+
+    def on_mark_applied(self) -> None:
+        """Record that you applied to these yourself — saved to the database."""
+        selected = self._selected_matches()
+        if not selected:
+            messagebox.showinfo("Nothing selected", "Select one or more rows first.")
+            return
+        if not messagebox.askyesno(
+            "Mark as applied",
+            f"Mark {len(selected)} job(s) as applied by you?\n\n"
+            "They will be saved to the database and never applied to automatically.",
+        ):
+            return
+
+        pipeline = self.pipeline()
+        for match in selected:
+            pipeline.record_manual_application(match.job, "marked as applied from the app")
+            self._append_log(f"marked applied: {match.job.title} — {match.job.company}", "ok")
+
+        self._refresh_tree()
+        self._set_status(f"Marked {len(selected)} job(s) as applied")
+
+    def on_unmark_applied(self) -> None:
+        selected = self._selected_matches()
+        if not selected or not self.store:
+            messagebox.showinfo("Nothing selected", "Select one or more rows first.")
+            return
+
+        removed = sum(self.store.clear_manual_mark(m.job) for m in selected)
+        self._refresh_tree()
+        if removed:
+            self._set_status(f"Cleared the manual mark on {removed} job(s)")
+        else:
+            messagebox.showinfo(
+                "Nothing to clear",
+                "None of those were marked by hand. Applications the tool actually "
+                "submitted stay on the record.",
+            )
+
     # --- applying ---
 
     def on_apply_selected(self) -> None:
-        selected = [self.matches[iid] for iid in self.tree.selection() if iid in self.matches]
+        selected = self._selected_matches()
         if not selected:
             messagebox.showinfo("Nothing selected", "Select one or more rows first.")
             return
@@ -684,11 +932,18 @@ class JobHunterApp(tk.Tk):
             messagebox.showinfo("Busy", "A task is already running.")
             return
 
+        self._push_run_settings()
+        mode = APPLY_MODES.get(self.apply_mode_var.get(), "auto")
         dry = self.dry_run_var.get()
-        mode = "DRY RUN — forms filled, nothing submitted" if dry else "LIVE — applications will be SUBMITTED"
-        if not messagebox.askyesno(
-            "Confirm", f"Apply to {len(matches)} job(s)?\n\nMode: {mode}"
-        ):
+
+        if mode == "manual":
+            description = "Each form is filled and left open in the browser for you to submit."
+        elif dry:
+            description = "DRY RUN — forms are filled and screenshotted, nothing is submitted."
+        else:
+            description = "LIVE — applications will actually be SUBMITTED."
+
+        if not messagebox.askyesno("Confirm", f"Apply to {len(matches)} job(s)?\n\n{description}"):
             return
 
         self._begin(f"Applying to {len(matches)} job(s)…")
@@ -702,12 +957,17 @@ class JobHunterApp(tk.Tk):
             pipeline = Pipeline(cfg, progress=lambda m: worker.send("progress", m))
             with browser_from_config(cfg) as browser:
                 ctx = pipeline._base_context(browser, dry)
+                ctx.mode = mode
                 for match in matches:
                     if worker.cancelled:
                         worker.send("progress", "Cancelled.")
                         break
                     outcome = pipeline.apply_one(match, ctx)
                     worker.send("outcome", outcome)
+                    if mode == "manual" and outcome.status == Status.FILLED:
+                        # Hold the browser open so the user can check and submit.
+                        worker.send("await_user", outcome)
+                        worker.wait_for_user()
 
         self.worker.start(task)
 
@@ -736,19 +996,38 @@ class JobHunterApp(tk.Tk):
                 self._show_results(message.payload)
             elif message.kind == "outcome":
                 self._refresh_tree()
+            elif message.kind == "await_user":
+                self._prompt_manual_submit(message.payload)
             elif message.kind == "error":
-                self._append_log(f"ERROR: {message.payload}")
+                self._append_log(f"ERROR: {message.payload}", "err")
                 messagebox.showerror("Task failed", str(message.payload))
             elif message.kind == "done":
                 self._refresh_tree()
                 self._end()
         self.after(150, self._poll)
 
-    def _append_log(self, text: str) -> None:
+    def _prompt_manual_submit(self, outcome: Any) -> None:
+        job = outcome.job
+        messagebox.showinfo(
+            "Form filled — your turn",
+            f"{job.title}\n{job.company}\n\n"
+            "The application form is filled and open in the browser.\n"
+            "Check it, submit it yourself, then click OK to continue.\n\n"
+            "Afterwards use 'I applied to this myself' to record it.",
+        )
+        self.worker.resume()
+
+    def _append_log(self, text: str, tag: str = "") -> None:
+        lowered = text.lower()
+        if not tag:
+            if lowered.startswith("error") or "failed" in lowered:
+                tag = "err"
+            elif lowered.startswith("warning") or "note:" in lowered:
+                tag = "warn"
+
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", text + "\n")
+        self.log_text.insert("end", text + "\n", tag or ())
         self.log_text.see("end")
-        # Keep the pane bounded; a long run produces thousands of lines.
         if int(self.log_text.index("end-1c").split(".")[0]) > 2000:
             self.log_text.delete("1.0", "500.0")
         self.log_text.configure(state="disabled")

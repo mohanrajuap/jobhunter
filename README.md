@@ -15,9 +15,10 @@ Discover ──▶ De-duplicate ──▶ Match ──▶ Apply ──▶ Notify
 ## What it actually does
 
 **Discovery** pulls open roles from public ATS APIs — Greenhouse, Lever, Ashby,
-SmartRecruiters, Workable, Recruitee — plus Naukri and any company careers page you point
-it at. A single run routinely sees a few thousand postings. Give it a careers URL and it
-sniffs which ATS is behind the page and uses that platform's API instead of scraping.
+SmartRecruiters, Workable, Recruitee — plus **Naukri**, **LinkedIn**, and any company
+careers page you point it at. A single run routinely sees a few thousand postings. Give it
+a careers URL and it sniffs which ATS is behind the page and uses that platform's API
+instead of scraping. Pick which sources run from the dropdown on the Search tab.
 
 **Matching** scores every job against your roles. Keywords come out of your resume
 automatically; you can add more. Each role carries its own resume(s), and the winning role
@@ -96,12 +97,32 @@ python run_gui.py
 
 | Tab | What it's for |
 |---|---|
-| **Search** | Hit Search. Results show score, role, which resume was picked, and whether you've **already applied**. Select rows and apply to just those, or apply to everything new. Double-click opens the posting. |
+| **Search** | Pick your sources and browser, hit Search. Results show score, role, which resume was picked, and whether you've **already applied**. Select rows and apply to just those, or apply to everything new. Double-click opens the posting; right-click for actions. |
 | **My Details** | The saved form — name, contact, CTC, notice period, screening answers. These values are what get typed into company application forms. |
 | **Roles & Resumes** | Multiple roles, each with its own titles, keywords and resumes. Add several resumes to one role and each job gets whichever one matches it best. |
 | **Activity** | Live log of the current run. |
 
-The dry-run checkbox is on by default and controls whether Apply actually submits.
+### Apply modes
+
+- **Automatic** — fills the form and submits it. Respects the dry-run checkbox.
+- **Manual review** — fills the form, leaves it open in the browser, and waits. You check
+  it and click submit yourself. Nothing is sent without you.
+
+### Which browser it drives
+
+The Browser dropdown lists what's actually installed — **Chrome, Brave, Edge**, or
+Playwright's bundled Chromium. Using one you already have skips the 150 MB download.
+
+Tick **Use my logged-in profile** to run against your real browser profile, so sites
+you're already signed into (Naukri, LinkedIn) stay signed in. That browser has to be
+**completely closed** while a run happens — including any system-tray icon — because
+Chromium won't share a profile between two programs.
+
+### Jobs you applied to yourself
+
+Select any row and hit **"I applied to this myself"**. It's written to the database, the
+row turns green, and the tool will never apply to that job automatically. **"Not applied"**
+undoes it — though an application the tool actually submitted stays on the record.
 
 ### Building a standalone .exe
 
@@ -163,6 +184,56 @@ Naukri jobs come out in three ways:
 - **Easy apply** — automated.
 - **Chatbot screening** — automated only if `profile.answers` covers the questions asked.
 - **"Apply on company site"** — always queued for you, since it redirects somewhere unknown.
+
+---
+
+## LinkedIn
+
+Discovery uses LinkedIn's logged-out job search, so finding jobs needs no account. In
+testing it returned 83 matching Chennai/Bangalore roles in one pass.
+
+Applying splits two ways:
+- **"Apply on company website"** — the tool follows the link through to the real ATS and
+  fills that form normally.
+- **Easy Apply** — behind a login with its own screening modal, so it goes to your manual
+  list with a direct link.
+
+One caveat on scoring: LinkedIn's search cards carry no job description, only a title and
+location. Keyword matching has nothing to bite on, so LinkedIn jobs top out around 65%
+while a Greenhouse job with a full description can hit 90%+. That's expected — don't raise
+`min_score` above ~0.6 if you want LinkedIn results.
+
+LinkedIn's terms restrict automated access. This runs the same searches you'd run by hand,
+at a human pace, but the account risk is yours.
+
+---
+
+## Oracle mirror (optional)
+
+Every application — automated, or one you marked as "I applied to this myself" — can also
+be written to an Oracle table so you can query your job hunt with real SQL.
+
+```yaml
+database:
+  oracle:
+    enabled: true
+    user: "learn"
+    password: env:ORACLE_PASSWORD    # set in .env
+    dsn: "localhost:1521/FREEPDB1"
+    table: "JOBHUNTER_APPLICATIONS"
+    create_table: true
+```
+
+```bash
+pip install oracledb
+```
+
+Thin mode — no Oracle Instant Client needed. The table and index are created on first run.
+
+SQLite stays the source of truth for de-duplication: it's local and always available. Oracle
+is a **mirror**, and if it's down the run carries on and logs the failure. Columns include
+fingerprint, applied_at, status, company, title, location, source, ats, job_url, role_name,
+resume_label, match_score, apply_mode and reason.
 
 ---
 

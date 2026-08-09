@@ -176,6 +176,19 @@ search:
 
 # === WHERE TO LOOK ==========================================================
 sources:
+  # LinkedIn's logged-out job search — no account needed for finding jobs.
+  # Postings that say "apply on company website" are followed through to the real ATS
+  # and applied to normally; Easy Apply ones go to your manual list.
+  linkedin:
+    enabled: true
+    locations:
+      - "Chennai, Tamil Nadu, India"
+      - "Bengaluru, Karnataka, India"
+    max_pages: 3
+    posted_within_days: 7
+    remote_only: false
+    delay_seconds: 2.0
+
   # Naukri needs a logged-in browser: run `jobhunter login naukri` once.
   naukri:
     enabled: true
@@ -256,6 +269,29 @@ apply:
   # submissions get your IP blocked and look nothing like a real applicant.
   delay_seconds: [25, 60]
 
+  # How applications are completed:
+  #   auto   — fill the form and submit it
+  #   manual — fill the form, leave it open in the browser, you review and submit
+  # Selectable per run from the Search tab.
+  mode: "auto"
+
+  # --- which browser to drive ---
+  # "" or "chromium"  Playwright's bundled Chromium (needs `playwright install chromium`)
+  # "chrome"          your installed Google Chrome
+  # "brave"           your installed Brave
+  # "msedge"          your installed Microsoft Edge
+  # Using one you already have skips the 150 MB download entirely.
+  browser: ""
+
+  # Use your REAL browser profile, so sites you're signed into (Naukri, LinkedIn) are
+  # already logged in. The catch: that browser must be completely closed while a run
+  # happens — Chromium will not share a profile between two programs. Check the tray.
+  use_existing_profile: false
+
+  # Only needed to override auto-detection (an unusual install path, or Vivaldi/Opera).
+  browser_executable: ""
+  browser_channel: ""
+
   # false shows the browser. Keep it visible until you trust the run: you can watch
   # what it's filling in and stop it if something looks wrong.
   headless: false
@@ -264,6 +300,7 @@ apply:
   locale: "en-IN"
 
   screenshot_on_failure: true
+  # Ignored when use_existing_profile is on.
   browser_profile_dir: ".state/browser"
 
   # Don't retry a job that landed in the manual queue for this many days.
@@ -296,6 +333,24 @@ schedule:
   timezone: "Asia/Kolkata"
   days: [mon, tue, wed, thu, fri]
   run_on_start: false
+
+# === ORACLE MIRROR ==========================================================
+# Optional. Every application — automated, or one you marked as "I applied to this
+# myself" in the app — is also written to an Oracle table so you can query your job
+# hunt with real SQL.
+#
+# SQLite stays the source of truth for de-duplication: it's local and always there.
+# Oracle is a mirror, and if it's down the run carries on regardless.
+#
+# Needs: pip install oracledb   (thin mode — no Oracle Instant Client required)
+database:
+  oracle:
+    enabled: false
+    user: "learn"
+    password: env:ORACLE_PASSWORD     # set it in .env, never here
+    dsn: "localhost:1521/FREEPDB1"
+    table: "JOBHUNTER_APPLICATIONS"
+    create_table: true                # creates the table and index on first run
 
 # === PLUMBING ===============================================================
 paths:

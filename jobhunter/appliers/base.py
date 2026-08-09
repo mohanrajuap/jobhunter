@@ -23,7 +23,14 @@ class ApplyContext:
     dry_run: bool = True
     submit_timeout_ms: int = 20_000
     screenshot_on_failure: bool = True
+    # "auto"   — fill the form and submit it
+    # "manual" — fill the form, leave it open in the browser, you review and submit
+    mode: str = "auto"
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def manual_review(self) -> bool:
+        return self.mode == "manual"
 
 
 class Applier(ABC):

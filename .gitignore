@@ -30,3 +30,7 @@ venv/
 Thumbs.db
 .idea/
 .vscode/
+
+# Config backups written by the app on save — these contain your real details
+config/*.bak
+*.bak

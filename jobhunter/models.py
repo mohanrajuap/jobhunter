@@ -81,10 +81,16 @@ class MatchResult:
 class Status(str, Enum):
     APPLIED = "applied"
     ALREADY_APPLIED = "already_applied"
+    # You applied by hand and told the app so. Terminal, like APPLIED — the tool must
+    # never re-apply to something you've already sent yourself.
+    APPLIED_MANUALLY = "applied_manually"
     MANUAL = "manual"  # needs a human — captcha, SSO, unanswerable question
     FAILED = "failed"  # unexpected error, retryable
     SKIPPED = "skipped"  # filtered out or over a cap
     DRY_RUN = "dry_run"  # matched and would have applied
+    # Manual-review mode: the form was filled and left open in the browser for you to
+    # check and submit. Not terminal — you decide whether it becomes an application.
+    FILLED = "filled_for_review"
 
 
 @dataclass
@@ -100,7 +106,7 @@ class Outcome:
 
     @property
     def needs_human(self) -> bool:
-        return self.status in (Status.MANUAL, Status.FAILED)
+        return self.status in (Status.MANUAL, Status.FAILED, Status.FILLED)
 
 
 @dataclass

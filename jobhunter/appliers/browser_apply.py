@@ -108,17 +108,24 @@ class BrowserApplier(Applier):
     def apply(self, job: Job, ctx: ApplyContext) -> Outcome:
         spec = self._spec(job)
         page = ctx.browser.new_page()
+        outcome: Outcome | None = None
         try:
-            return self._run(page, job, ctx, spec)
+            outcome = self._run(page, job, ctx, spec)
+            return outcome
         except Exception as exc:
             shot = ctx.browser.screenshot(page, f"error-{job.company}") if ctx.screenshot_on_failure else ""
             log.warning("apply failed for %s @ %s — %s", job.title, job.company, exc)
-            return self.failed(job, f"unexpected error: {exc}", shot)
+            outcome = self.failed(job, f"unexpected error: {exc}", shot)
+            return outcome
         finally:
-            try:
-                page.close()
-            except Exception:
-                pass
+            # In manual-review mode a successfully filled form is left on screen for
+            # the user to check and submit — closing it would throw away the work.
+            keep_open = outcome is not None and outcome.status == Status.FILLED
+            if not keep_open:
+                try:
+                    page.close()
+                except Exception:
+                    pass
 
     def _run(self, page: Any, job: Job, ctx: ApplyContext, spec: AtsSpec) -> Outcome:
         page.goto(job.target_url, wait_until="domcontentloaded")
@@ -154,6 +161,20 @@ class BrowserApplier(Applier):
                 job,
                 f"{len(result.unresolved_required)} required question(s) I could not answer: {missing}",
                 shot,
+            )
+
+        if ctx.manual_review:
+            shot = ctx.browser.screenshot(page, f"review-{job.company}")
+            try:
+                page.bring_to_front()
+            except Exception:
+                pass
+            return Outcome(
+                job=job,
+                status=Status.FILLED,
+                reason=f"filled {len(result.filled)} fields and left open in the browser "
+                       f"— review it and click submit yourself",
+                screenshot=shot,
             )
 
         if ctx.dry_run:

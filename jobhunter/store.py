@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS runs (
 """
 
 # Statuses that mean "do not try this job again".
-_TERMINAL = (Status.APPLIED.value, Status.ALREADY_APPLIED.value)
+_TERMINAL = (Status.APPLIED.value, Status.ALREADY_APPLIED.value, Status.APPLIED_MANUALLY.value)
 
 
 def _now() -> str:
@@ -161,6 +161,30 @@ class Store:
         ).fetchone()
         return int(row["c"])
 
+    def mark_applied_manually(self, job: Job, note: str = "") -> Outcome:
+        """Record that you applied to this job yourself.
+
+        Persisted exactly like an automated application, so it counts toward the
+        de-duplication check and the tool will never apply to it again.
+        """
+        outcome = Outcome(
+            job=job,
+            status=Status.APPLIED_MANUALLY,
+            reason=note or "marked as applied by you",
+        )
+        self.record_outcome(outcome)
+        return outcome
+
+    def clear_manual_mark(self, job: Job) -> int:
+        """Undo a manual mark. Only removes rows you added by hand — an application the
+        tool actually submitted stays on the record."""
+        with self._tx() as conn:
+            cursor = conn.execute(
+                "DELETE FROM applications WHERE fingerprint = ? AND status = ?",
+                (job.fingerprint, Status.APPLIED_MANUALLY.value),
+            )
+            return cursor.rowcount
+
     def status_for(self, job: Job) -> tuple[str, str, str]:
         """Latest known state of a job as (status, reason, iso_timestamp).
 
@@ -168,12 +192,12 @@ class Store:
         uses to tell you at a glance whether you've already applied.
         """
         row = self._conn.execute(
-            """SELECT status, reason, at FROM applications
+            f"""SELECT status, reason, at FROM applications
                WHERE fingerprint = ?
-               ORDER BY CASE status WHEN 'applied' THEN 0 WHEN 'already_applied' THEN 0 ELSE 1 END,
+               ORDER BY CASE WHEN status IN ({','.join('?' * len(_TERMINAL))}) THEN 0 ELSE 1 END,
                         at DESC
                LIMIT 1""",
-            (job.fingerprint,),
+            (job.fingerprint, *_TERMINAL),
         ).fetchone()
         if row is None:
             return "new", "", ""
@@ -184,14 +208,17 @@ class Store:
         return {job.fingerprint: self.status_for(job) for job in jobs}
 
     def pending_manual(self, limit: int = 100) -> list[sqlite3.Row]:
+        placeholders = ",".join("?" * len(_TERMINAL))
         return self._conn.execute(
-            """SELECT j.company, j.title, j.location, COALESCE(NULLIF(j.apply_url,''), j.url) url,
+            f"""SELECT j.company, j.title, j.location, COALESCE(NULLIF(j.apply_url,''), j.url) url,
                       a.reason, a.at
                FROM applications a JOIN jobs j ON j.fingerprint = a.fingerprint
                WHERE a.status IN (?, ?)
-                 AND a.fingerprint NOT IN (SELECT fingerprint FROM applications WHERE status = ?)
+                 AND a.fingerprint NOT IN (
+                     SELECT fingerprint FROM applications WHERE status IN ({placeholders})
+                 )
                ORDER BY a.at DESC LIMIT ?""",
-            (Status.MANUAL.value, Status.FAILED.value, Status.APPLIED.value, limit),
+            (Status.MANUAL.value, Status.FAILED.value, *_TERMINAL, limit),
         ).fetchall()
 
     def stats(self) -> dict[str, int]:

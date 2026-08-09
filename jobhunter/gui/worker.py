@@ -43,6 +43,9 @@ class Worker:
         self.queue: queue.Queue[Message] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._cancel = threading.Event()
+        # Lets manual-review mode pause the worker while the user submits a form
+        # themselves. The UI calls resume() when they dismiss the prompt.
+        self._resume = threading.Event()
 
     @property
     def busy(self) -> bool:
@@ -57,6 +60,26 @@ class Worker:
 
     def send(self, kind: str, payload: Any = None) -> None:
         self.queue.put(Message(kind, payload))
+
+    def wait_for_user(self, timeout: float = 1800.0) -> bool:
+        """Block the worker until the UI calls resume(). Called from the worker thread.
+
+        The timeout matters: without it, a dialog the user never answers would wedge the
+        worker thread for the life of the process.
+        """
+        self._resume.clear()
+        while not self._resume.wait(timeout=1.0):
+            if self._cancel.is_set():
+                return False
+            timeout -= 1.0
+            if timeout <= 0:
+                log.warning("timed out waiting for the user to submit — continuing")
+                return False
+        return True
+
+    def resume(self) -> None:
+        """Called from the UI thread to release a worker waiting in wait_for_user()."""
+        self._resume.set()
 
     def start(self, fn: Callable[["Worker"], None]) -> bool:
         """Run `fn(worker)` on a background thread. Returns False if already busy."""
