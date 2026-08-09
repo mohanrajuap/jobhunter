@@ -180,6 +180,58 @@ class TestFeedbackLearning:
         assert scorer._feedback_penalty(self._job("Anything At All")) == (0.0, [])
 
 
+class TestConfigBackups:
+    """The app rewrites config on every save. A single shared .bak slot means the second
+    save destroys the only copy of what you had before the first."""
+
+    def _cfg(self, path):
+        return Config(data={"a": 0}, raw={"a": 0}, path=path)
+
+    def test_saving_keeps_the_previous_version(self, tmp_path):
+        import yaml
+
+        target = tmp_path / "config.yaml"
+        cfg = self._cfg(target)
+        cfg.set("a", 1)
+        cfg.save(target)
+        cfg.set("a", 2)
+        cfg.save(target)
+
+        backups = list(tmp_path.glob("config.yaml.*.bak"))
+        assert len(backups) == 1
+        assert yaml.safe_load(backups[0].read_text())["a"] == 1
+        assert yaml.safe_load(target.read_text())["a"] == 2
+
+    def test_backups_are_capped(self, tmp_path):
+        import time
+
+        target = tmp_path / "config.yaml"
+        cfg = self._cfg(target)
+        for i in range(Config.KEEP_BACKUPS + 3):
+            cfg.set("a", i)
+            cfg.save(target)
+            time.sleep(1.01)  # timestamps are per-second
+        assert len(list(tmp_path.glob("config.yaml.*.bak"))) == Config.KEEP_BACKUPS
+
+    def test_env_references_survive_a_save(self, tmp_path, monkeypatch):
+        """Saving must never bake a resolved secret into the file."""
+        monkeypatch.setenv("SECRET_TOKEN", "super-secret-value")
+        target = tmp_path / "config.yaml"
+        target.write_text("notify:\n  telegram:\n    bot_token: env:SECRET_TOKEN\n", encoding="utf-8")
+
+        from jobhunter.config import load_config
+
+        cfg = load_config(target)
+        assert cfg.get("notify.telegram.bot_token") == "super-secret-value"
+
+        cfg.set("notify.telegram.chat_id", "12345")
+        cfg.save(target)
+
+        written = target.read_text(encoding="utf-8")
+        assert "super-secret-value" not in written
+        assert "env:SECRET_TOKEN" in written
+
+
 class TestBrowserDetection:
     def test_bundled_chromium_is_always_offered(self):
         from jobhunter.browser import detect_browsers

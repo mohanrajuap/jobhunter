@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -84,11 +85,16 @@ class Config:
                 node = nxt
             node[parts[-1]] = value
 
+    #: How many timestamped backups to keep beside the config.
+    KEEP_BACKUPS = 5
+
     def save(self, path: str | Path | None = None, backup: bool = True) -> Path:
         """Write the config back to YAML.
 
         Comments are not preserved — PyYAML doesn't round-trip them — so the previous
-        file is copied to `<name>.bak` first.
+        version is kept first. Backups are timestamped rather than a single `.bak`
+        slot: the app rewrites this file on every save, and one shared slot means the
+        second save destroys the only copy of what you had before the first.
         """
         target = Path(path) if path else self.path
         if target is None:
@@ -97,8 +103,10 @@ class Config:
         target.parent.mkdir(parents=True, exist_ok=True)
 
         if backup and target.exists():
-            backup_path = target.with_suffix(target.suffix + ".bak")
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup_path = target.with_suffix(f"{target.suffix}.{stamp}.bak")
             backup_path.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+            self._prune_backups(target)
 
         target.write_text(
             yaml.safe_dump(self.raw or self.data, sort_keys=False, allow_unicode=True,
@@ -107,6 +115,16 @@ class Config:
         )
         self.path = target
         return target
+
+    def _prune_backups(self, target: Path) -> None:
+        """Keep only the most recent KEEP_BACKUPS copies."""
+        pattern = f"{target.name}.*.bak"
+        backups = sorted(target.parent.glob(pattern), reverse=True)
+        for stale in backups[self.KEEP_BACKUPS:]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
 
     # --- frequently used, typed accessors ---
 
