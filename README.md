@@ -277,10 +277,19 @@ at a human pace, but the account risk is yours.
 
 ---
 
-## Oracle mirror (optional)
+## Oracle mirror (entirely optional)
 
-Every application — automated, or one you marked as "I applied to this myself" — can also
-be written to an Oracle table so you can query your job hunt with real SQL.
+**You do not need a database to use JobHunter.** Your whole application history lives in a
+local SQLite file that requires no setup, and that file is the source of truth for
+de-duplication. If you skip this section nothing is missing — the app behaves identically.
+
+On first run the app creates your config and asks once whether you want Oracle. Say no and
+it's off. You can change your mind any time under **Settings**, which has the connection
+fields and a **🔌 Test connection** button. A database that's down, misconfigured, or whose
+driver isn't installed never stops a run — it logs and carries on.
+
+If you do have Oracle: every application — automated, or one you marked as "I applied to
+this myself" — is also written to an Oracle table so you can query your job hunt with SQL.
 
 ```yaml
 database:

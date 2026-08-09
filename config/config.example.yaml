@@ -269,6 +269,7 @@ sources:
   smartrecruiters:
     enabled: true
     companies:
+      - Freshworks                # ~157 roles, mostly Chennai/Bengaluru
       - Visa
     detail_limit: 30              # description fetches per company (slow but needed)
     max_postings_per_company: 200

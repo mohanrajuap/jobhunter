@@ -134,16 +134,77 @@ class JobHunterApp(tk.Tk):
             self._populate_profile()
             self._populate_roles()
             self._populate_pages()
+            self._populate_settings()
             self._populate_run_settings()
         except ConfigError as exc:
             self.cfg = None
             self._set_status(f"No config: {exc}")
+            if initial and self._offer_first_run_setup():
+                self._load_config(initial=False)
+                return
             if initial:
                 messagebox.showwarning(
                     "No configuration",
                     f"{exc}\n\nCopy config/config.example.yaml to config/config.yaml, "
                     "then fill in the 'My Details' and 'Roles & Resumes' tabs.",
                 )
+
+    def _offer_first_run_setup(self) -> bool:
+        """No config yet — offer to create one, and ask the one question that isn't
+        obvious from the UI: whether they want the optional Oracle mirror."""
+        example = Path("config/config.example.yaml")
+        target = Path("config/config.yaml")
+        if not example.exists() or target.exists():
+            return False
+
+        if not messagebox.askyesno(
+            "Welcome to JobHunter",
+            "No configuration found. Create one now from the bundled example?\n\n"
+            "It ships with a verified list of job boards, so search works immediately. "
+            "You'll then fill in your details and resumes on the next two tabs.",
+        ):
+            return False
+
+        try:
+            import shutil
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(example, target)
+        except Exception as exc:
+            messagebox.showerror("Could not create config", str(exc))
+            return False
+
+        wants_oracle = messagebox.askyesno(
+            "Optional: Oracle logging",
+            "Do you want applications mirrored into an Oracle database?\n\n"
+            "This is entirely optional and most people should say No — JobHunter keeps "
+            "your full history in a local file either way, with no setup.\n\n"
+            "Say Yes only if you already have an Oracle database and want to query your "
+            "job hunt with SQL. You can change this later under Settings.",
+        )
+        try:
+            import yaml
+
+            data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+            data.setdefault("database", {}).setdefault("oracle", {})["enabled"] = bool(wants_oracle)
+            target.write_text(
+                yaml.safe_dump(data, sort_keys=False, allow_unicode=True,
+                               default_flow_style=False, width=100),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            log.warning("could not record the Oracle choice: %s", exc)
+
+        messagebox.showinfo(
+            "Nearly there",
+            f"Created {target}.\n\n"
+            "Next:\n"
+            "  1. 'My Details' — your name, email, phone. These go into real application forms.\n"
+            "  2. 'Roles & Resumes' — the jobs you want, and your resume file.\n\n"
+            "Then hit Search. Dry run is on by default, so nothing is submitted until you "
+            "turn it off.",
+        )
+        return True
 
     def pipeline(self) -> Any:
         """Shared Pipeline instance — also the path Oracle writes go through."""
@@ -166,6 +227,7 @@ class JobHunterApp(tk.Tk):
         self._build_profile_tab()
         self._build_roles_tab()
         self._build_career_pages_tab()
+        self._build_settings_tab()
         self._build_log_tab()
 
         bar = ttk.Frame(self)
@@ -721,7 +783,190 @@ class JobHunterApp(tk.Tk):
         self._update_source_button()
         self._save_config(f"Saved {len(cleaned)} career page(s)")
 
-    # --- tab 5: activity ---
+    # --- tab 5: settings ---
+
+    def _build_settings_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="  Settings  ")
+
+        ttk.Label(
+            tab,
+            text="Everything here is optional. JobHunter stores your whole application history "
+                 "in a local SQLite file with no setup at all — these are extras.",
+            style="Muted.TLabel", wraplength=1100,
+        ).pack(anchor="w", padx=16, pady=(14, 10))
+
+        # --- storage ---
+        storage = ttk.Labelframe(tab, text="Where your history is stored", padding=10)
+        storage.pack(fill="x", padx=16, pady=(0, 12))
+
+        self.sqlite_path_var = tk.StringVar()
+        row = ttk.Frame(storage)
+        row.pack(fill="x", pady=3)
+        ttk.Label(row, text="SQLite (always on)", width=22).pack(side="left")
+        ttk.Entry(row, textvariable=self.sqlite_path_var, width=68, state="readonly").pack(side="left")
+        ttk.Label(
+            storage,
+            text="This is the source of truth: it is what stops the tool applying to the same job "
+                 "twice, and it needs no configuration.",
+            style="Muted.TLabel", wraplength=1000,
+        ).pack(anchor="w", pady=(2, 0))
+
+        # --- oracle ---
+        oracle = ttk.Labelframe(tab, text="Oracle mirror  (optional)", padding=10)
+        oracle.pack(fill="x", padx=16, pady=(0, 12))
+
+        ttk.Label(
+            oracle,
+            text="If you have an Oracle database, every application can also be written there so "
+                 "you can query your job hunt with SQL. Leave this off and nothing changes — the "
+                 "app works exactly the same without it, and a database that is down or "
+                 "misconfigured never stops a run.",
+            style="Muted.TLabel", wraplength=1000,
+        ).pack(anchor="w", pady=(0, 8))
+
+        self.oracle_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(oracle, text="Also log applications to Oracle",
+                        variable=self.oracle_enabled_var,
+                        command=self._toggle_oracle_fields).pack(anchor="w", pady=(0, 6))
+
+        self.oracle_widgets: list[tk.Widget] = []
+        self.oracle_vars: dict[str, tk.StringVar] = {}
+        for label, key, default in [
+            ("Username", "database.oracle.user", "learn"),
+            ("Connect string (DSN)", "database.oracle.dsn", "localhost:1521/FREEPDB1"),
+            ("Table name", "database.oracle.table", "JOBHUNTER_APPLICATIONS"),
+        ]:
+            row = ttk.Frame(oracle)
+            row.pack(fill="x", pady=3)
+            ttk.Label(row, text=label, width=22).pack(side="left")
+            var = tk.StringVar(value=default)
+            self.oracle_vars[key] = var
+            entry = ttk.Entry(row, textvariable=var, width=48)
+            entry.pack(side="left")
+            self.oracle_widgets.append(entry)
+
+        pw_row = ttk.Frame(oracle)
+        pw_row.pack(fill="x", pady=3)
+        ttk.Label(pw_row, text="Password", width=22).pack(side="left")
+        self.oracle_pw_status = tk.StringVar(value="")
+        ttk.Label(pw_row, textvariable=self.oracle_pw_status).pack(side="left")
+
+        btns = ttk.Frame(oracle)
+        btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text="🔌  Test connection", style="Ghost.TButton",
+                   command=self.on_test_oracle).pack(side="left")
+        ttk.Button(btns, text="💾  Save settings", style="Primary.TButton",
+                   command=self.on_save_settings).pack(side="left", padx=8)
+
+        # --- dependency note ---
+        deps = ttk.Labelframe(tab, text="Optional extras", padding=10)
+        deps.pack(fill="x", padx=16, pady=(0, 12))
+        self.deps_var = tk.StringVar()
+        ttk.Label(deps, textvariable=self.deps_var, style="Muted.TLabel",
+                  wraplength=1000, justify="left").pack(anchor="w")
+
+        self._toggle_oracle_fields()
+
+    def _toggle_oracle_fields(self) -> None:
+        state = "normal" if self.oracle_enabled_var.get() else "disabled"
+        for widget in getattr(self, "oracle_widgets", []):
+            widget.configure(state=state)
+
+    def _populate_settings(self) -> None:
+        if not self.cfg:
+            return
+        self.sqlite_path_var.set(str((self.cfg.data_dir() / "jobhunter.sqlite3").resolve()))
+        self.oracle_enabled_var.set(bool(self.cfg.get("database.oracle.enabled", False)))
+        for key, var in self.oracle_vars.items():
+            value = self.cfg.get(key, "")
+            if value:
+                var.set(str(value))
+        self._toggle_oracle_fields()
+
+        # The password is only ever read from .env, never shown or stored in config.
+        import os
+
+        has_pw = bool(os.environ.get("ORACLE_PASSWORD") or self.cfg.get("database.oracle.password"))
+        self.oracle_pw_status.set(
+            "read from ORACLE_PASSWORD in .env  ✓" if has_pw
+            else "not set — add ORACLE_PASSWORD to your .env file"
+        )
+
+        missing = []
+        for module, why in [("oracledb", "Oracle mirror"), ("playwright", "applying to jobs"),
+                            ("bs4", "career pages and LinkedIn"), ("pdfplumber", "PDF resumes"),
+                            ("docx", "DOCX resumes")]:
+            try:
+                __import__(module)
+            except ImportError:
+                missing.append(f"{module} (needed for {why}) — pip install {module}")
+        self.deps_var.set(
+            "\n".join(missing) if missing
+            else "All optional packages are installed. Nothing to do here."
+        )
+
+    def on_test_oracle(self) -> None:
+        if not self.cfg:
+            messagebox.showerror("No config", "Load a config file first.")
+            return
+        if self.worker.busy:
+            messagebox.showinfo("Busy", "A task is already running.")
+            return
+
+        self._capture_settings()
+        cfg = self.cfg
+
+        def task(worker: Worker) -> None:
+            from ..db import build_sink
+
+            probe = Config(data={"database": {"oracle": {
+                "enabled": True,
+                "user": cfg.get("database.oracle.user", ""),
+                "password": cfg.get("database.oracle.password", ""),
+                "dsn": cfg.get("database.oracle.dsn", ""),
+                "table": cfg.get("database.oracle.table", "JOBHUNTER_APPLICATIONS"),
+                "create_table": True,
+            }}})
+            sink = build_sink(probe)
+            if sink is None:
+                worker.send("oracle_test", (False, "Could not connect — see the Activity tab."))
+            else:
+                count = sink.count()
+                sink.close()
+                worker.send("oracle_test", (True, f"Connected. The table holds {count} row(s)."))
+
+        self._begin("Testing the Oracle connection…")
+        self.worker.start(task)
+
+    def _show_oracle_test(self, payload: tuple[bool, str]) -> None:
+        ok, message = payload
+        if ok:
+            messagebox.showinfo("Oracle", message)
+        else:
+            messagebox.showerror(
+                "Oracle",
+                f"{message}\n\nThis does not stop you using JobHunter — everything is still "
+                "recorded locally in SQLite.",
+            )
+
+    def _capture_settings(self) -> None:
+        if not self.cfg:
+            return
+        self.cfg.set("database.oracle.enabled", bool(self.oracle_enabled_var.get()))
+        for key, var in self.oracle_vars.items():
+            self.cfg.set(key, var.get().strip())
+
+    def on_save_settings(self) -> None:
+        if not self.cfg:
+            messagebox.showerror("No config", "Load a config file first.")
+            return
+        self._capture_settings()
+        # Keep the password as an env reference so saving never writes it into the file.
+        self.cfg.raw.setdefault("database", {}).setdefault("oracle", {})["password"] = "env:ORACLE_PASSWORD"
+        self._save_config("Settings saved")
+
+    # --- tab 6: activity ---
 
     def _build_log_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -1314,6 +1559,8 @@ class JobHunterApp(tk.Tk):
                 self._show_results(message.payload)
             elif message.kind == "outcome":
                 self._refresh_tree()
+            elif message.kind == "oracle_test":
+                self._show_oracle_test(message.payload)
             elif message.kind == "page_test":
                 self._show_page_test(message.payload)
             elif message.kind == "await_user":

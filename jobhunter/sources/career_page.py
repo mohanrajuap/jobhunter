@@ -48,6 +48,15 @@ _NAV_RE = re.compile(
     re.I,
 )
 
+# Calls to action that only *start* with a nav phrase, so the anchored match above
+# misses them — "Sign Up for Free", "Join us. Do good work.", "Grow with Chargebee".
+_NAV_PREFIX_RE = re.compile(
+    r"^(sign\s?up|sign\s?in|log\s?in|register|subscribe|get started|try (it )?free|"
+    r"start (free|now)|book a demo|request a demo|contact|join us|grow with|work with|"
+    r"how we|why we|meet the|read (the|our)|watch|download|learn about|discover)\b",
+    re.I,
+)
+
 # A real posting URL points at one job, not a section: a numeric/hashed id, or a path
 # segment below the listing page.
 _JOB_URL_RE = re.compile(
@@ -73,7 +82,8 @@ def looks_like_a_job_link(title: str, url: str, base_url: str) -> bool:
     words = title.split()
     if not 2 <= len(words) <= 14 or len(title) < 6 or len(title) > 120:
         return False
-    if _NAV_RE.match(title.strip()):
+    stripped = title.strip()
+    if _NAV_RE.match(stripped) or _NAV_PREFIX_RE.match(stripped):
         return False
 
     clean_url = url.split("?")[0].rstrip("/")

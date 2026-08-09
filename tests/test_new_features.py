@@ -266,6 +266,40 @@ class TestOracleSink:
         sink = OracleSink("u", "p", "d")
         assert sink.record(Outcome(job=make_job(), status=Status.APPLIED)) is False
 
+    def test_works_when_the_driver_is_not_installed(self, monkeypatch):
+        """Oracle is optional. Someone without oracledb must still be able to use the
+        app — a missing driver is a logged warning, not a crash."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def no_oracledb(name, *args, **kwargs):
+            if name == "oracledb":
+                raise ImportError("No module named 'oracledb'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_oracledb)
+        cfg = Config(data={"database": {"oracle": {
+            "enabled": True, "user": "u", "password": "p", "dsn": "d",
+        }}})
+        assert build_sink(cfg) is None
+
+    def test_pipeline_runs_with_oracle_disabled(self, tmp_path):
+        """The default path: no Oracle at all, everything still recorded in SQLite."""
+        from jobhunter.pipeline import Pipeline
+
+        cfg = Config(data={
+            "paths": {"data_dir": str(tmp_path)},
+            "database": {"oracle": {"enabled": False}},
+        })
+        pipeline = Pipeline(cfg, store=Store(tmp_path / "t.sqlite3"))
+        assert pipeline.oracle is None
+
+        job = make_job()
+        outcome = pipeline.record_manual_application(job, "by hand")
+        assert outcome.status == Status.APPLIED_MANUALLY
+        assert pipeline.store.has_applied(job)  # SQLite still has it
+
 
 class TestRuntimeFilters:
     """Posted-date and location have to work for every source, including ones with no

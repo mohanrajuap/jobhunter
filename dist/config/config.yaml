@@ -1,0 +1,433 @@
+# ---------------------------------------------------------------------------
+# jobhunter configuration
+#
+#   cp config/config.example.yaml config/config.yaml   (then edit config.yaml)
+#
+# config.yaml is gitignored. Secrets belong in .env and are referenced here as
+# `env:VAR_NAME`. Run `jobhunter doctor` after editing to check everything.
+# ---------------------------------------------------------------------------
+
+# === WHO YOU ARE ============================================================
+# These values are typed into application forms verbatim. Get them right.
+profile:
+  full_name: "Your Name"
+  first_name: "Your"
+  last_name: "Name"
+  email: "you@example.com"
+  phone: "+91 90000 00000"
+
+  location: "Chennai, India"
+  city: "Chennai"
+  state: "Tamil Nadu"
+  country: "India"
+  postal_code: "600001"
+  address: ""
+
+  linkedin: "https://www.linkedin.com/in/your-handle"
+  github: ""
+  portfolio: ""
+
+  # Absolute path. PDF or DOCX. This file is uploaded to every application.
+  resume_path: "C:/Users/you/Documents/resume.pdf"
+  cover_letter_path: ""          # optional file; leave blank to skip
+  cover_letter_text: ""          # used for free-text "cover letter" boxes
+
+  current_company: ""
+  current_ctc: "12 LPA"
+  expected_ctc: "18 LPA"
+  notice_period: "30 days"
+  total_experience_years: 5      # overrides whatever is detected in the resume
+  heard_from: "Company website"
+
+  # Answers to yes/no screening questions. Keep these accurate — they are
+  # submitted as fact on your behalf.
+  work_authorized: "Yes"         # authorised to work in the country of the role
+  needs_sponsorship: "No"        # do you require visa sponsorship
+  willing_to_relocate: "Yes"
+  open_to_remote: "Yes"
+
+  # Free-text fallbacks. The key is matched as a substring of the question, so
+  # "notice period" catches "What is your notice period?". Longest key wins.
+  # Anything a form requires that isn't answerable from here sends the job to
+  # your manual queue rather than being guessed at.
+  answers:
+    "why do you want to work": "I'm looking for a role where I can go deeper on reliability engineering at scale, and your team's work is a strong fit for my background."
+    "reason for change": "Looking for broader ownership and more technical depth."
+    "current ctc": "12 LPA"
+    "expected ctc": "18 LPA"
+    "notice period": "30 days"
+    "willing to relocate": "Yes"
+    "how many years": "5"
+    "highest qualification": "Bachelor of Engineering"
+
+# === ROLES AND RESUMES ======================================================
+# Each role has its own job titles and its own resume(s). Every job is scored
+# against every role; the best-matching role decides which resume is uploaded.
+#
+# Multiple resumes per role is the useful bit: give a role a Kubernetes-heavy CV
+# and a database-heavy one, and each job gets whichever variant its description
+# actually matches. Editable in the UI under "Roles & Resumes".
+#
+# Delete this whole block to fall back to the simple setup: search.roles below
+# plus the single profile.resume_path above.
+roles:
+  - name: "Application Support"
+    enabled: true
+    titles:
+      - "Application Support Engineer"
+      - "Production Support Engineer"
+      - "Technical Support Engineer"
+    resumes:
+      - path: "C:/Users/you/Documents/resume-support.pdf"
+        label: "support"
+    keywords:
+      - "incident management"
+      - "servicenow"
+      - "itil"
+
+  - name: "DevOps / SRE"
+    enabled: true
+    titles:
+      - "Site Reliability Engineer"
+      - "DevOps Engineer"
+      - "Platform Engineer"
+    resumes:
+      - path: "C:/Users/you/Documents/resume-devops.pdf"
+        label: "devops-primary"
+      - path: "C:/Users/you/Documents/resume-cloud.pdf"
+        label: "cloud-variant"
+    keywords:
+      - "kubernetes"
+      - "terraform"
+      - "aws"
+    # Any `search:` setting can be overridden per role.
+    overrides:
+      min_score: 0.45
+      locations: ["Chennai", "Bangalore", "Remote"]
+
+# === WHAT YOU'RE LOOKING FOR ================================================
+search:
+  # Used only when the `roles:` block above is absent or a role omits its own.
+  roles:
+    - "Application Support Engineer"
+    - "Site Reliability Engineer"
+    - "Production Support Engineer"
+    - "DevOps Engineer"
+
+  # Naukri search queries per role (board APIs return everything and are filtered
+  # locally, so this only affects keyword-search sources).
+  max_queries_per_role: 4
+
+  # Pull skills out of the resume automatically and use them for matching.
+  use_resume_keywords: true
+  # Also search Naukri for this many job titles found in the resume.
+  extra_queries_from_resume: 2
+
+  # Extra keywords to weight on top of whatever the resume yields.
+  keywords:
+    - "incident management"
+    - "sql"
+    - "linux"
+    - "python"
+    - "monitoring"
+
+  # A job must mention at least one of these. Empty = no such requirement.
+  must_have_any: []
+
+  # Instant disqualifiers, checked against the title and the opening of the body.
+  exclude_keywords:
+    - "intern"
+    - "internship"
+    - "unpaid"
+    - "commission only"
+    - "sales executive"
+    - "bpo"
+    - "voice process"
+    - "night shift only"
+
+  blocked_companies: []
+
+  locations:
+    - "Chennai"
+    - "Bangalore"
+    - "Bengaluru"
+    - "Hyderabad"
+    - "India"
+  remote_ok: true
+
+  min_experience_years: 3
+  max_experience_years: 12
+
+  # Applies to every source. LinkedIn and Naukri get it pushed into the query; ATS
+  # boards and career pages have no such concept, so it is enforced centrally when
+  # scoring. Overridable per run from the Search tab. null = any date.
+  posted_within_days: 7
+
+  # --- learning from the "Not relevant" button ---
+  # How many rejections from one company before it is filtered out entirely.
+  feedback_company_threshold: 3
+  # How many rejections sharing a title word before that word costs a job score.
+  feedback_term_threshold: 3
+  # Ceiling on that penalty, so feedback reshuffles the ranking without burying
+  # an otherwise strong match. Words from your own target roles are never penalised.
+  feedback_max_penalty: 0.35
+
+  # Only apply above this match score (0-1). Start at 0.5, run `jobhunter discover`
+  # and tune. Higher = fewer, better-targeted applications.
+  min_score: 0.50
+
+  # true = reject any title missing a distinctive word of your target roles, instead
+  # of just penalising it. Stops "Application *Security* Engineer" matching
+  # "Application *Support* Engineer". Higher precision, lower recall.
+  strict_title_match: false
+
+  weights:
+    title: 0.45
+    keywords: 0.35
+    location: 0.10
+    freshness: 0.10
+
+# === WHERE TO LOOK ==========================================================
+sources:
+  # LinkedIn's logged-out job search — no account needed for finding jobs.
+  # Postings that say "apply on company website" are followed through to the real ATS
+  # and applied to normally; Easy Apply ones go to your manual list.
+  linkedin:
+    enabled: true
+    locations:
+      - "Chennai, Tamil Nadu, India"
+      - "Bengaluru, Karnataka, India"
+    max_pages: 3
+    posted_within_days: 7
+    remote_only: false
+    delay_seconds: 2.0
+    # Search cards carry no description, which caps LinkedIn matches around 65%. One
+    # extra request per job pulls the full description AND the applicant count, so
+    # matching improves and you can see how contested a role is. Capped because it is
+    # the slowest thing this source does.
+    fetch_details: true
+    detail_limit: 25
+
+  # Naukri needs a logged-in browser: run `jobhunter login naukri` once.
+  naukri:
+    enabled: true
+    max_pages: 3
+    results_per_page: 20
+    experience_years: 5
+    job_age_days: 7
+    locations: ["Chennai", "Bangalore", "Hyderabad"]
+    delay_seconds: 2.0
+
+  # For every board below, the value is the company's slug on that ATS. Find it in
+  # the careers-page URL, e.g. boards.greenhouse.io/SLUG, jobs.lever.co/SLUG.
+  # `jobhunter doctor` tells you which slugs are live.
+  # Every slug below returned open roles when this file was written. Boards go stale
+  # when a company changes ATS, so re-run `jobhunter doctor` now and then — it lists
+  # each slug and how many roles it returned.
+  greenhouse:
+    enabled: true
+    boards:
+      # --- India-headquartered ---
+      - razorpaysoftwareprivatelimited
+      - phonepe
+      - postman
+      - groww
+      - slice
+      - turing
+      - observeai
+      - sigmoid
+      # --- global, with real India engineering offices ---
+      - cloudflare
+      - databricks
+      - datadog
+      - elastic
+      - gitlab
+      - mongodb
+      - twilio
+
+  lever:
+    enabled: true
+    companies:
+      - paytm
+      - meesho
+      - zeta
+      - mindtickle
+      - hevodata
+      - epifi
+      - cred
+      - eternal        # Zomato / Blinkit group
+
+  ashby:
+    enabled: true
+    companies:
+      - confluent
+      - navi
+      - atlan
+      - skyflow
+      - spotdraft
+
+  smartrecruiters:
+    enabled: true
+    companies:
+      - Visa
+    detail_limit: 30              # description fetches per company (slow but needed)
+    max_postings_per_company: 200
+
+  workable:
+    enabled: false
+    companies: []
+
+  recruitee:
+    enabled: false
+    companies: []
+
+  # Companies whose careers page has no public board API behind it. jobhunter sniffs
+  # for one anyway, and falls back to reading the rendered page in the browser.
+  #
+  # These are lower yield than the board lists above — a scraped page gives a title and
+  # a link, not a description or a location — so prefer a board slug wherever a company
+  # has one. Add your own on the Career Pages tab and use its Test button first.
+  custom_career_pages:
+    - name: "Zoho"
+      url: "https://www.zoho.com/careers/"
+      default_location: "Chennai, India"
+    - name: "Freshworks"
+      url: "https://www.freshworks.com/company/careers/"
+      default_location: "Chennai, India"
+    - name: "Chargebee"
+      url: "https://www.chargebee.com/careers/"
+      default_location: "Chennai, India"
+    - name: "BrowserStack"
+      url: "https://www.browserstack.com/careers"
+      default_location: "India"
+    - name: "Juspay"
+      url: "https://juspay.io/careers"
+      default_location: "Bengaluru, India"
+    - name: "Cashfree"
+      url: "https://www.cashfree.com/careers/"
+      default_location: "Bengaluru, India"
+  #  - name: "Acme Corp"
+  #    url: "https://acme.com/careers"
+  #    # Optional — only needed when detection fails:
+  #    job_link_selector: "a.job-listing"
+  #    default_location: "Chennai, India"
+
+  career_page_options:
+    max_links_per_page: 60
+    fetch_descriptions: true
+    delay_seconds: 1.0
+    # Re-open the page in the browser when plain HTTP finds almost nothing — which is
+    # what happens on any career site that builds its job list in JavaScript.
+    use_browser_fallback: true
+    min_jobs_before_fallback: 3
+    render_wait_ms: 3500
+
+# === APPLYING ===============================================================
+apply:
+  # START HERE. true = fill every form but never click submit, and screenshot the
+  # result. Watch a few runs, confirm the forms are filled correctly, THEN set
+  # false (or use `jobhunter run --live`).
+  dry_run: true
+
+  max_applications_per_day: 20
+  max_per_company_per_day: 3
+
+  # Random pause between applications, in seconds. Do not set this low — rapid-fire
+  # submissions get your IP blocked and look nothing like a real applicant.
+  delay_seconds: [25, 60]
+
+  # How applications are completed:
+  #   auto   — fill the form and submit it
+  #   manual — fill the form, leave it open in the browser, you review and submit
+  # Selectable per run from the Search tab.
+  mode: "auto"
+
+  # --- which browser to drive ---
+  # "" or "chromium"  Playwright's bundled Chromium (needs `playwright install chromium`)
+  # "chrome"          your installed Google Chrome
+  # "brave"           your installed Brave
+  # "msedge"          your installed Microsoft Edge
+  # Using one you already have skips the 150 MB download entirely.
+  browser: ""
+
+  # Use your REAL browser profile, so sites you're signed into (Naukri, LinkedIn) are
+  # already logged in. The catch: that browser must be completely closed while a run
+  # happens — Chromium will not share a profile between two programs. Check the tray.
+  use_existing_profile: false
+
+  # Only needed to override auto-detection (an unusual install path, or Vivaldi/Opera).
+  browser_executable: ""
+  browser_channel: ""
+
+  # false shows the browser. Keep it visible until you trust the run: you can watch
+  # what it's filling in and stop it if something looks wrong.
+  headless: false
+  slow_mo_ms: 0
+  timeout_seconds: 30
+  locale: "en-IN"
+
+  screenshot_on_failure: true
+  # Ignored when use_existing_profile is on.
+  browser_profile_dir: ".state/browser"
+
+  # Don't retry a job that landed in the manual queue for this many days.
+  recheck_after_days: 30
+
+# === NOTIFICATIONS ==========================================================
+notify:
+  email:
+    enabled: true
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    use_tls: true
+    username: env:SMTP_USER       # from .env
+    password: env:SMTP_PASS       # Gmail: an App Password, not your login password
+    from: env:SMTP_USER
+    to:
+      - "you@example.com"
+
+  telegram:
+    enabled: false
+    bot_token: env:TELEGRAM_BOT_TOKEN
+    chat_id: env:TELEGRAM_CHAT_ID
+
+  desktop:
+    enabled: true
+
+# === SCHEDULE (used by `jobhunter daemon`; see `jobhunter schedule`) =========
+schedule:
+  time: "08:00"
+  timezone: "Asia/Kolkata"
+  days: [mon, tue, wed, thu, fri]
+  run_on_start: false
+
+# === ORACLE MIRROR ==========================================================
+# Optional. Every application — automated, or one you marked as "I applied to this
+# myself" in the app — is also written to an Oracle table so you can query your job
+# hunt with real SQL.
+#
+# SQLite stays the source of truth for de-duplication: it's local and always there.
+# Oracle is a mirror, and if it's down the run carries on regardless.
+#
+# Needs: pip install oracledb   (thin mode — no Oracle Instant Client required)
+database:
+  oracle:
+    enabled: false
+    user: "learn"
+    password: env:ORACLE_PASSWORD     # set it in .env, never here
+    dsn: "localhost:1521/FREEPDB1"
+    table: "JOBHUNTER_APPLICATIONS"
+    create_table: true                # creates the table and index on first run
+
+# === PLUMBING ===============================================================
+paths:
+  state_dir: ".state"
+  data_dir: "data"
+  log_dir: "logs"
+  report_dir: "reports"
+  screenshot_dir: "screenshots"
+
+http:
+  timeout_seconds: 20
+
+log_level: "INFO"
