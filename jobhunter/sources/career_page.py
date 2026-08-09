@@ -66,10 +66,14 @@ class CareerPageSource(Source):
             name = entry.get("name") or urllib.parse.urlparse(url).netloc
             if not url:
                 continue
+            if self.cancelled:
+                log.info("career_page: stopped before '%s'", name)
+                break
             try:
                 found = self._fetch_page(entry, name)
                 log.info("career_page: %s -> %d jobs", name, len(found))
                 jobs.extend(found)
+                self._emit(found)
             except Exception as exc:
                 log.warning("career_page: %s failed — %s", name, exc)
             self._sleep()

@@ -42,12 +42,18 @@ ALL_SOURCE_NAMES = [
 
 
 def build_sources(
-    config: Config, browser: Any = None, only: list[str] | None = None
+    config: Config,
+    browser: Any = None,
+    only: list[str] | None = None,
+    should_cancel: Any = None,
+    on_jobs: Any = None,
 ) -> list[Source]:
     """Instantiate every enabled source.
 
     `only` restricts the run to a subset by name — that's how the UI's source picker
-    works, without having to rewrite the config file.
+    works, without having to rewrite the config file. `should_cancel` and `on_jobs` are
+    attached to each instance so Stop interrupts a search and results can stream to the
+    UI as they arrive.
     """
     session = make_session(timeout=int(config.get("http.timeout_seconds", 20)))
     selected = {s.lower() for s in only} if only else None
@@ -81,6 +87,12 @@ def build_sources(
         page_cfg = dict(config.section("sources.career_page_options"))
         page_cfg["pages"] = pages
         sources.append(CareerPageSource(page_cfg, session=session))
+
+    for source in sources:
+        if should_cancel is not None:
+            source.should_cancel = should_cancel
+        if on_jobs is not None:
+            source.on_jobs = on_jobs
 
     log.info("Enabled sources: %s", ", ".join(s.name for s in sources) or "none")
     return sources

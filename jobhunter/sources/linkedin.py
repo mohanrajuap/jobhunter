@@ -65,14 +65,20 @@ class LinkedInSource(Source):
         jobs: list[Job] = []
         for query in queries:
             for location in self.locations:
+                if self.cancelled:
+                    log.info("linkedin: stopped")
+                    return jobs
                 found = self._search(query, location)
                 log.info("linkedin: '%s' in '%s' -> %d jobs", query, location or "anywhere", len(found))
                 jobs.extend(found)
+                self._emit(found)
         return jobs
 
     def _search(self, query: str, location: str) -> list[Job]:
         jobs: list[Job] = []
         for page in range(self.max_pages):
+            if self.cancelled:
+                break
             url = SEARCH.format(query=self._params(query, location, page * _PAGE_SIZE))
             try:
                 html = self._get_text(url)

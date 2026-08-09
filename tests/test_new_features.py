@@ -79,6 +79,107 @@ class TestFilledForReview:
         assert Outcome(job=make_job(), status=Status.FILLED).needs_human
 
 
+class TestFeedbackLearning:
+    """Marking jobs irrelevant has to change future results — and must never damage the
+    roles the user actually wants."""
+
+    def _scorer(self, signals):
+        from jobhunter.matching.scorer import Scorer
+        from jobhunter.resume.keywords import ResumeProfile
+
+        cfg = Config(data={"search": {
+            "roles": ["Application Support Engineer"],
+            "locations": ["Chennai", "India"], "min_score": 0.4, "posted_within_days": None,
+        }})
+        profile = ResumeProfile(
+            keywords={"python": 1.0, "sql": 1.0, "linux": 1.0},
+            titles=["application support engineer"], years_experience=6,
+        )
+        return Scorer(cfg, profile, feedback=signals)
+
+    def _job(self, title, company="Acme"):
+        return Job(source="t", company=company, title=title, url="u",
+                   location="Chennai, India", description="python sql linux")
+
+    def test_marking_is_persisted(self, store):
+        job = make_job()
+        store.mark_irrelevant(job, "wrong domain")
+        assert store.is_irrelevant(job)
+        assert store.status_for(job)[0] == Status.IRRELEVANT.value
+
+    def test_irrelevant_job_is_not_reoffered(self, store):
+        job = make_job()
+        store.mark_irrelevant(job)
+        assert store.seen_recently(job, within_days=30)
+
+    def test_undo_restores_the_job(self, store):
+        job = make_job()
+        store.mark_irrelevant(job)
+        store.clear_feedback(job)
+        assert not store.is_irrelevant(job)
+        assert store.status_for(job)[0] == "new"
+
+    def test_signals_count_companies_and_terms(self, store):
+        for i in range(3):
+            store.mark_irrelevant(make_job(title=f"Telecalling Executive {i}", company="BadCorp"))
+        signals = store.feedback_signals()
+        assert signals["total"] == 3
+        assert signals["companies"]["badcorp"] == 3
+        assert signals["title_terms"]["telecalling"] == 3
+
+    def test_generic_words_are_not_learned(self, store):
+        store.mark_irrelevant(make_job(title="Senior Engineer and Manager"))
+        terms = store.feedback_signals()["title_terms"]
+        assert "senior" not in terms and "engineer" not in terms and "and" not in terms
+
+    def test_repeatedly_rejected_company_is_filtered(self, store):
+        for i in range(3):
+            store.mark_irrelevant(make_job(title=f"Role {i}", company="BadCorp"))
+        scorer = self._scorer(store.feedback_signals())
+        result = scorer.score(self._job("Application Support Engineer", company="BadCorp"))
+        assert not result.passed
+        assert "not relevant" in result.rejected_because
+
+    def test_one_rejection_is_treated_as_noise(self, store):
+        store.mark_irrelevant(make_job(title="Role", company="BadCorp"))
+        scorer = self._scorer(store.feedback_signals())
+        assert scorer.score(self._job("Application Support Engineer", company="BadCorp")).passed
+
+    def test_lookalike_titles_are_penalised(self, store):
+        for i, company in enumerate(["A", "B", "C", "D"]):
+            store.mark_irrelevant(make_job(title=f"Voice Process Telecaller {i}", company=company))
+        scorer = self._scorer(store.feedback_signals())
+
+        clean = scorer.score(self._job("Application Support Engineer")).score
+        lookalike = scorer.score(self._job("Voice Process Support Engineer")).score
+        assert lookalike < clean
+
+    def test_target_role_words_never_become_negative_signals(self, store):
+        """Rejecting "Voice Process Support Engineer" must not teach it that 'support'
+        is bad — that would bury the user's own target role."""
+        for i, company in enumerate(["A", "B", "C", "D"]):
+            store.mark_irrelevant(make_job(title=f"Voice Process Support {i}", company=company))
+        scorer = self._scorer(store.feedback_signals())
+
+        assert "support" in scorer.protected_terms
+        result = scorer.score(self._job("Application Support Engineer"))
+        assert result.passed
+        assert result.score > 0.9
+
+    def test_penalty_is_capped(self, store):
+        for i, company in enumerate(["A", "B", "C", "D", "E"]):
+            store.mark_irrelevant(
+                make_job(title=f"Voice Process Telecalling Bpo Chat {i}", company=company))
+        scorer = self._scorer(store.feedback_signals())
+        penalty, _terms = scorer._feedback_penalty(
+            self._job("Voice Process Telecalling Bpo Chat Engineer"))
+        assert penalty <= scorer.max_feedback_penalty
+
+    def test_no_feedback_means_no_penalty(self, store):
+        scorer = self._scorer(store.feedback_signals())
+        assert scorer._feedback_penalty(self._job("Anything At All")) == (0.0, [])
+
+
 class TestBrowserDetection:
     def test_bundled_chromium_is_always_offered(self):
         from jobhunter.browser import detect_browsers

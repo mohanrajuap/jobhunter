@@ -118,11 +118,37 @@ you're already signed into (Naukri, LinkedIn) stay signed in. That browser has t
 **completely closed** while a run happens — including any system-tray icon — because
 Chromium won't share a profile between two programs.
 
+Results **stream in as they're found** — each source fills the grid while the slower ones
+are still working, rather than everything appearing at the end. **Stop** interrupts a
+search at the next checkpoint (it finishes the HTTP request already in flight, so it's
+"stopping", not an instant kill).
+
 ### Jobs you applied to yourself
 
 Select any row and hit **"I applied to this myself"**. It's written to the database, the
-row turns green, and the tool will never apply to that job automatically. **"Not applied"**
-undoes it — though an application the tool actually submitted stays on the record.
+row turns green, and the tool will never apply to that job automatically. **Undo**
+reverses it — though an application the tool actually submitted stays on the record.
+
+### Teaching it what you don't want
+
+Hit **"✗ Not relevant"** on jobs that miss the mark. Each one is written to a `feedback`
+table, and the signals are read back at scoring time:
+
+- **Company** — reject 3+ jobs from the same company and it stops surfacing them.
+- **Title words** — reject 3+ jobs sharing a distinctive word ("telecalling", "voice") and
+  similar titles get pushed down the rankings.
+
+Title words are a **penalty, not a filter**, capped at 0.35 — the same word can appear in a
+job you'd want, so this reshuffles the ranking rather than hiding things.
+
+One guard matters: **words from your own target roles can never become negative signals.**
+Without it, rejecting a few "Voice Process *Support* Engineer" jobs would teach it that
+"support" is bad and bury your entire target role. Verified in the tests: after rejecting
+four such jobs, "Application Support Engineer" still scores 1.00 while "Voice Process
+Support Engineer" drops to 0.46.
+
+Thresholds are tunable under `search:` — `feedback_company_threshold`,
+`feedback_term_threshold`, `feedback_max_penalty`.
 
 ### Building a standalone .exe
 

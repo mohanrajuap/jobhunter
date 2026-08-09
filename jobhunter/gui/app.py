@@ -37,6 +37,7 @@ STATUS_LABELS = {
     Status.ALREADY_APPLIED.value: "✓ Applied",
     Status.APPLIED_MANUALLY.value: "✓ You applied",
     Status.FILLED.value: "◐ Filled — review",
+    Status.IRRELEVANT.value: "✗ Not relevant",
     Status.MANUAL.value: "⚠ Needs you",
     Status.FAILED.value: "⚠ Failed",
     Status.DRY_RUN.value: "· Dry run",
@@ -101,6 +102,7 @@ class JobHunterApp(tk.Tk):
         self.style = theme.apply_theme(self)
         self.worker = Worker()
         self.matches: dict[str, MatchResult] = {}
+        self._match_seq = 0
         self.config_path = config_path
         self.cfg: Config | None = None
         self.store: Store | None = None
@@ -236,7 +238,8 @@ class JobHunterApp(tk.Tk):
                                         state="disabled")
         self.apply_all_btn.pack(side="left", padx=(8, 0))
 
-        ttk.Button(row2, text="Stop", style="Warn.TButton", command=self.worker.cancel).pack(side="right")
+        self.stop_btn = ttk.Button(row2, text="■  Stop", style="Warn.TButton", command=self.on_stop)
+        self.stop_btn.pack(side="right")
 
         # --- row 3: filter ---
         row3 = ttk.Frame(tab)
@@ -272,6 +275,8 @@ class JobHunterApp(tk.Tk):
         self.tree.tag_configure("manual", background=theme.ROW_MANUAL)
         self.tree.tag_configure("filled", background=theme.ROW_FILLED)
         self.tree.tag_configure("new", background=theme.ROW_NEW)
+        self.tree.tag_configure("irrelevant", background=theme.ROW_IRRELEVANT,
+                                foreground=theme.MUTED)
 
         self.tree.bind("<Double-1>", self._open_selected_url)
         self.tree.bind("<Button-3>", self._show_context_menu)
@@ -279,22 +284,26 @@ class JobHunterApp(tk.Tk):
         self.row_menu = tk.Menu(self, tearoff=False)
         self.row_menu.add_command(label="Open posting in browser", command=self._open_selected_url)
         self.row_menu.add_separator()
-        self.row_menu.add_command(label="✓  Mark as applied", command=self.on_mark_applied)
-        self.row_menu.add_command(label="↩  Mark as not applied", command=self.on_unmark_applied)
+        self.row_menu.add_command(label="✓  I applied to this myself", command=self.on_mark_applied)
+        self.row_menu.add_command(label="✗  Not relevant", command=self.on_mark_irrelevant)
+        self.row_menu.add_command(label="↩  Undo mark", command=self.on_undo_mark)
 
         # --- footer actions ---
         footer = ttk.Frame(tab)
         footer.pack(fill="x", padx=14, pady=(0, 12))
         ttk.Button(footer, text="✓  I applied to this myself", style="Accent.TButton",
                    command=self.on_mark_applied).pack(side="left")
-        ttk.Button(footer, text="↩  Not applied", command=self.on_unmark_applied).pack(
-            side="left", padx=8)
+        ttk.Button(footer, text="✗  Not relevant", style="Warn.TButton",
+                   command=self.on_mark_irrelevant).pack(side="left", padx=8)
+        ttk.Button(footer, text="↩  Undo", command=self.on_undo_mark).pack(side="left")
         ttk.Button(footer, text="Open posting", style="Ghost.TButton",
                    command=self._open_selected_url).pack(side="left", padx=8)
         ttk.Label(
             footer,
-            text="Marking a job as applied saves it to the database, so it is never applied to twice.",
-            style="Muted.TLabel",
+            text="Marks are saved to the database. 'Not relevant' also teaches the matcher — "
+                 "reject a few jobs from the same company or with the same title word and "
+                 "similar ones stop surfacing.",
+            style="Muted.TLabel", wraplength=520,
         ).pack(side="left", padx=16)
 
     def _set_all_sources(self, value: bool) -> None:
@@ -769,6 +778,7 @@ class JobHunterApp(tk.Tk):
         self.matches.clear()
 
         cfg = self.cfg
+        self._match_seq = 0
 
         def task(worker: Worker) -> None:
             from ..browser import browser_from_config
@@ -777,25 +787,41 @@ class JobHunterApp(tk.Tk):
             pipeline = Pipeline(cfg, progress=lambda m: worker.send("progress", m))
             needs_browser = "naukri" in sources and cfg.get("sources.naukri.enabled", False)
 
+            def stream(batch: list[MatchResult]) -> None:
+                worker.send("batch", batch)
+
+            kwargs = dict(
+                include_seen=True, only=sources,
+                on_batch=stream, should_cancel=lambda: worker.cancelled,
+            )
             if needs_browser:
                 with browser_from_config(cfg) as browser:
-                    matches, errors = pipeline.discover_and_match(
-                        browser, include_seen=True, only=sources)
+                    matches, errors = pipeline.discover_and_match(browser, **kwargs)
             else:
-                matches, errors = pipeline.discover_and_match(None, include_seen=True, only=sources)
+                matches, errors = pipeline.discover_and_match(None, **kwargs)
 
             worker.send("results", (matches, errors))
 
         self.worker.start(task)
 
-    def _show_results(self, payload: tuple[list[MatchResult], dict[str, str]]) -> None:
-        matches, errors = payload
-        self.matches = {f"m{i}": m for i, m in enumerate(matches)}
+    def _add_batch(self, batch: list[MatchResult]) -> None:
+        """Append newly found matches to the grid while the search is still running."""
+        for match in batch:
+            self._match_seq += 1
+            self.matches[f"m{self._match_seq}"] = match
         self._refresh_tree()
+
+        if self.matches:
+            self.apply_sel_btn.configure(state="normal")
+            self.apply_all_btn.configure(state="normal")
+
+    def _show_results(self, payload: tuple[list[MatchResult], dict[str, str]]) -> None:
+        _matches, errors = payload
+        # Rows already arrived via _add_batch; this only reports what went wrong.
         for name, err in errors.items():
             self._append_log(f"  ! source '{name}' failed: {err}", "warn")
 
-        state = "normal" if matches else "disabled"
+        state = "normal" if self.matches else "disabled"
         self.apply_sel_btn.configure(state=state)
         self.apply_all_btn.configure(state=state)
 
@@ -806,6 +832,8 @@ class JobHunterApp(tk.Tk):
         if status in (Status.APPLIED.value, Status.ALREADY_APPLIED.value,
                       Status.APPLIED_MANUALLY.value):
             return status, "applied"
+        if status == Status.IRRELEVANT.value:
+            return status, "irrelevant"
         if status == Status.FILLED.value:
             return status, "filled"
         if status in (Status.MANUAL.value, Status.FAILED.value):
@@ -816,10 +844,12 @@ class JobHunterApp(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         needle = self.filter_var.get().strip().lower()
         hide_applied = self.hide_applied_var.get()
-        shown = applied = 0
+        shown = applied = rejected = 0
 
         for iid, match in self.matches.items():
             status, tag = self._row_status(match)
+            if tag == "irrelevant":
+                rejected += 1
             if tag == "applied":
                 applied += 1
                 if hide_applied:
@@ -844,7 +874,10 @@ class JobHunterApp(tk.Tk):
             )
             shown += 1
 
-        self.count_var.set(f"{shown} shown · {len(self.matches)} matched · {applied} already applied")
+        summary = f"{shown} shown · {len(self.matches)} matched · {applied} already applied"
+        if rejected:
+            summary += f" · {rejected} marked not relevant"
+        self.count_var.set(summary)
 
     def _sort_by(self, column: str) -> None:
         rows = [(self.tree.set(iid, column), iid) for iid in self.tree.get_children("")]
@@ -891,16 +924,58 @@ class JobHunterApp(tk.Tk):
         self._refresh_tree()
         self._set_status(f"Marked {len(selected)} job(s) as applied")
 
-    def on_unmark_applied(self) -> None:
+    def on_mark_irrelevant(self) -> None:
+        """Teach the matcher: these aren't what you want."""
+        selected = self._selected_matches()
+        if not selected:
+            messagebox.showinfo("Nothing selected", "Select one or more rows first.")
+            return
+        if not messagebox.askyesno(
+            "Not relevant",
+            f"Mark {len(selected)} job(s) as not relevant?\n\n"
+            "They'll be hidden from future searches, and their company and title words "
+            "will push similar jobs down the rankings.",
+        ):
+            return
+
+        pipeline = self.pipeline()
+        for match in selected:
+            pipeline.record_irrelevant(match.job, "marked not relevant from the app")
+            self._append_log(f"not relevant: {match.job.title} — {match.job.company}", "warn")
+
+        self._refresh_tree()
+        self._report_learning()
+
+    def _report_learning(self) -> None:
+        """Tell the user what the feedback has actually taught it so far."""
+        if not self.store:
+            return
+        signals = self.store.feedback_signals()
+        companies = [c for c, n in signals["companies"].items() if n >= 2]
+        terms = [t for t, n in signals["title_terms"].items() if n >= 3]
+        summary = f"Learned from {signals['total']} rejected job(s)."
+        if companies:
+            summary += f" Now filtering: {', '.join(sorted(companies)[:5])}."
+        if terms:
+            summary += f" Down-ranking titles with: {', '.join(sorted(terms)[:5])}."
+        self._append_log(summary, "ok")
+        self._set_status(summary)
+
+    def on_undo_mark(self) -> None:
+        """Undo either kind of mark on the selected rows."""
         selected = self._selected_matches()
         if not selected or not self.store:
             messagebox.showinfo("Nothing selected", "Select one or more rows first.")
             return
 
-        removed = sum(self.store.clear_manual_mark(m.job) for m in selected)
+        removed = 0
+        for match in selected:
+            removed += self.store.clear_manual_mark(match.job)
+            removed += self.store.clear_feedback(match.job)
+
         self._refresh_tree()
         if removed:
-            self._set_status(f"Cleared the manual mark on {removed} job(s)")
+            self._set_status(f"Cleared {removed} mark(s)")
         else:
             messagebox.showinfo(
                 "Nothing to clear",
@@ -973,12 +1048,23 @@ class JobHunterApp(tk.Tk):
 
     # --- worker plumbing ---
 
+    def on_stop(self) -> None:
+        """Ask the worker to stop. It finishes the request already in flight, then quits
+        at the next checkpoint — so this is 'stopping', not an instant kill."""
+        if not self.worker.busy:
+            return
+        self.worker.cancel()
+        self.worker.resume()  # release a manual-review wait, if one is pending
+        self.stop_btn.configure(text="Stopping…", state="disabled")
+        self._append_log("Stop requested — finishing the current request…", "warn")
+
     def _begin(self, message: str) -> None:
         self._set_status(message)
         self.progress.start(12)
         self.search_btn.configure(state="disabled")
         self.apply_sel_btn.configure(state="disabled")
         self.apply_all_btn.configure(state="disabled")
+        self.stop_btn.configure(text="■  Stop", state="normal")
 
     def _end(self) -> None:
         self.progress.stop()
@@ -986,12 +1072,15 @@ class JobHunterApp(tk.Tk):
         state = "normal" if self.matches else "disabled"
         self.apply_sel_btn.configure(state=state)
         self.apply_all_btn.configure(state=state)
+        self.stop_btn.configure(text="■  Stop", state="normal")
         self._set_status("Ready")
 
     def _poll(self) -> None:
         for message in self.worker.drain():
             if message.kind == "progress":
                 self._append_log(str(message.payload))
+            elif message.kind == "batch":
+                self._add_batch(message.payload)
             elif message.kind == "results":
                 self._show_results(message.payload)
             elif message.kind == "outcome":

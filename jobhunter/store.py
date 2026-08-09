@@ -7,6 +7,7 @@ every job it found yesterday.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -44,6 +45,22 @@ CREATE TABLE IF NOT EXISTS applications (
 CREATE INDEX IF NOT EXISTS idx_app_fingerprint ON applications (fingerprint);
 CREATE INDEX IF NOT EXISTS idx_app_at ON applications (at);
 
+-- What you told the app about jobs it showed you. Read back at scoring time, so
+-- marking things irrelevant actually changes what surfaces tomorrow.
+CREATE TABLE IF NOT EXISTS feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL,
+    label       TEXT NOT NULL,   -- 'irrelevant' | 'relevant'
+    company     TEXT,
+    title       TEXT,
+    source      TEXT,
+    reason      TEXT,
+    at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_label ON feedback (label);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_unique ON feedback (fingerprint, label);
+
 CREATE TABLE IF NOT EXISTS runs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at   TEXT NOT NULL,
@@ -59,6 +76,13 @@ CREATE TABLE IF NOT EXISTS runs (
 
 # Statuses that mean "do not try this job again".
 _TERMINAL = (Status.APPLIED.value, Status.ALREADY_APPLIED.value, Status.APPLIED_MANUALLY.value)
+
+# Title words too common to carry any signal about what you rejected.
+_GENERIC_TITLE_WORDS = {
+    "the", "and", "for", "with", "senior", "junior", "lead", "staff", "principal",
+    "associate", "engineer", "developer", "analyst", "manager", "specialist",
+    "consultant", "architect", "officer", "executive", "new", "job", "role",
+}
 
 
 def _now() -> str:
@@ -184,6 +208,76 @@ class Store:
                 (job.fingerprint, Status.APPLIED_MANUALLY.value),
             )
             return cursor.rowcount
+
+    # --- feedback / learning ---
+
+    def mark_irrelevant(self, job: Job, reason: str = "") -> Outcome:
+        """Record that a job isn't what you want.
+
+        Two writes on purpose: an `applications` row so it's never applied to or shown
+        as new again, and a `feedback` row whose company and title terms are fed back
+        into scoring.
+        """
+        self.record_job(job)
+        with self._tx() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO feedback
+                       (fingerprint, label, company, title, source, reason, at)
+                   VALUES (?, 'irrelevant', ?, ?, ?, ?, ?)""",
+                (job.fingerprint, job.company, job.title, job.source, reason, _now()),
+            )
+        outcome = Outcome(
+            job=job, status=Status.IRRELEVANT, reason=reason or "marked not relevant by you"
+        )
+        self.record_outcome(outcome)
+        return outcome
+
+    def clear_feedback(self, job: Job) -> int:
+        with self._tx() as conn:
+            removed = conn.execute(
+                "DELETE FROM feedback WHERE fingerprint = ?", (job.fingerprint,)
+            ).rowcount
+            conn.execute(
+                "DELETE FROM applications WHERE fingerprint = ? AND status = ?",
+                (job.fingerprint, Status.IRRELEVANT.value),
+            )
+        return removed
+
+    def is_irrelevant(self, job: Job) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM feedback WHERE fingerprint = ? AND label = 'irrelevant' LIMIT 1",
+            (job.fingerprint,),
+        ).fetchone()
+        return row is not None
+
+    def feedback_signals(self) -> dict[str, dict[str, int]]:
+        """Aggregate what you've rejected into signals the Scorer can act on.
+
+        Returns counts of companies and of distinctive title words. Counts matter: one
+        rejection is noise, several of the same company or word is a preference.
+        """
+        rows = self._conn.execute(
+            "SELECT company, title FROM feedback WHERE label = 'irrelevant'"
+        ).fetchall()
+
+        companies: dict[str, int] = {}
+        terms: dict[str, int] = {}
+        for row in rows:
+            company = (row["company"] or "").strip().lower()
+            if company:
+                companies[company] = companies.get(company, 0) + 1
+            for word in re.findall(r"[a-z]{3,}", (row["title"] or "").lower()):
+                if word not in _GENERIC_TITLE_WORDS:
+                    terms[word] = terms.get(word, 0) + 1
+
+        return {"companies": companies, "title_terms": terms, "total": len(rows)}
+
+    def feedback_rows(self, limit: int = 200) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            """SELECT f.label, f.company, f.title, f.source, f.reason, f.at
+               FROM feedback f ORDER BY f.at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
 
     def status_for(self, job: Job) -> tuple[str, str, str]:
         """Latest known state of a job as (status, reason, iso_timestamp).

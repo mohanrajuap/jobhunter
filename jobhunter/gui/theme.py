@@ -27,6 +27,7 @@ ROW_APPLIED = "#e6f7ef"
 ROW_MANUAL = "#fff6e5"
 ROW_FILLED = "#e7f0ff"
 ROW_NEW = "#ffffff"
+ROW_IRRELEVANT = "#f1f2f6"   # greyed out — you told us this one isn't wanted
 
 HEADER_BG = "#1b2138"
 HEADER_FG = "#ffffff"

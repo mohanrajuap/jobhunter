@@ -18,14 +18,23 @@ log = logging.getLogger(__name__)
 
 
 class MultiRoleScorer:
-    def __init__(self, config: Config, roles: list[RoleTarget]):
+    def __init__(self, config: Config, roles: list[RoleTarget], feedback: dict | None = None):
         self.cfg = config
         self.roles = roles
+        self.feedback = feedback or {}
         self.scorers: list[tuple[RoleTarget, Scorer]] = [
-            (role, Scorer(config, role.profile, overrides=role.overrides)) for role in roles
+            (role, Scorer(config, role.profile, overrides=role.overrides, feedback=self.feedback))
+            for role in roles
         ]
         if not self.scorers:
             log.warning("No roles configured — nothing can match")
+        if self.feedback.get("total"):
+            log.info(
+                "Applying your feedback from %d rejected job(s): %d companies, %d title terms",
+                self.feedback.get("total", 0),
+                len(self.feedback.get("companies", {})),
+                len(self.feedback.get("title_terms", {})),
+            )
 
     def score(self, job: Job) -> MatchResult:
         """Best result across all roles. If none pass, return the closest miss so the

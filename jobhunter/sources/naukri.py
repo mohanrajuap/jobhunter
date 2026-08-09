@@ -131,9 +131,13 @@ class NaukriSource(Source):
                 )
 
             for query in queries:
+                if self.cancelled:
+                    log.info("naukri: stopped")
+                    break
                 found = self._search(page, query)
                 log.info("naukri: '%s' -> %d jobs", query, len(found))
                 jobs.extend(found)
+                self._emit(found)
                 self._sleep()
         finally:
             try:

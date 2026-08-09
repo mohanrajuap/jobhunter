@@ -78,10 +78,24 @@ class Weights:
 
 class Scorer:
     def __init__(
-        self, config: Config, profile: ResumeProfile, overrides: dict | None = None
+        self,
+        config: Config,
+        profile: ResumeProfile,
+        overrides: dict | None = None,
+        feedback: dict | None = None,
     ):
         self.cfg = config
         self.profile = profile
+
+        # What you've marked "not relevant". A single rejection is noise, so signals
+        # only take effect once the same company or word has been rejected repeatedly.
+        feedback = feedback or {}
+        self.rejected_companies: dict[str, int] = feedback.get("companies", {}) or {}
+        self.rejected_terms: dict[str, int] = feedback.get("title_terms", {}) or {}
+        search_cfg = config.section("search")
+        self.company_reject_at = int(search_cfg.get("feedback_company_threshold", 3))
+        self.term_penalty_at = int(search_cfg.get("feedback_term_threshold", 3))
+        self.max_feedback_penalty = float(search_cfg.get("feedback_max_penalty", 0.35))
 
         # Per-role overrides shadow the global `search:` block, so one role can use a
         # different location list or score threshold without duplicating the rest.
@@ -117,6 +131,15 @@ class Scorer:
 
         # Titles to match against: explicit config roles first, then resume-derived ones.
         self.target_titles = self.roles or self.profile.titles
+
+        # Words from the roles you actually want are never allowed to become negative
+        # signals. Without this, rejecting a few "Voice Process Support Engineer" jobs
+        # teaches the matcher that "support" is bad — and buries the whole target role.
+        self.protected_terms: set[str] = set()
+        for title in self.target_titles:
+            self.protected_terms.update(re.findall(r"[a-z]{3,}", title.lower()))
+        for keyword in self.profile.keywords:
+            self.protected_terms.update(re.findall(r"[a-z]{3,}", keyword.lower()))
         if not self.target_titles:
             log.warning("No target titles from config or resume — title scoring will be neutral")
 
@@ -128,6 +151,12 @@ class Scorer:
 
         if job.company.lower().strip() in self.blocked_companies:
             return f"company '{job.company}' is on the blocklist"
+
+        rejections = self.rejected_companies.get(job.company.lower().strip(), 0)
+        if rejections >= self.company_reject_at:
+            return (
+                f"you marked {rejections} jobs from '{job.company}' as not relevant"
+            )
 
         for word, pattern in self._exclude_res:
             # Excludes are checked against the title and the first part of the body;
@@ -298,6 +327,32 @@ class Scorer:
             return 0.35
         return 0.15
 
+    def _feedback_penalty(self, job: Job) -> tuple[float, list[str]]:
+        """Push down jobs resembling ones you've rejected before.
+
+        A penalty rather than a filter: the same word can appear in a job you'd want,
+        so this changes the ranking instead of hiding things outright. Capped so no
+        amount of feedback can bury an otherwise excellent match entirely.
+        """
+        if not self.rejected_terms:
+            return 0.0, []
+
+        title_words = set(re.findall(r"[a-z]{3,}", job.title.lower()))
+        hits = [
+            (word, count) for word, count in self.rejected_terms.items()
+            if count >= self.term_penalty_at
+            and word in title_words
+            and word not in self.protected_terms
+        ]
+        if not hits:
+            return 0.0, []
+
+        # Each qualifying term costs a little more, with diminishing effect.
+        penalty = min(sum(0.06 + 0.02 * min(count, 6) for _, count in hits),
+                      self.max_feedback_penalty)
+        labels = [f"{word}×{count}" for word, count in sorted(hits, key=lambda h: -h[1])[:3]]
+        return round(penalty, 3), labels
+
     def score(self, job: Job) -> MatchResult:
         rejection = self._reject(job)
         if rejection:
@@ -317,12 +372,17 @@ class Scorer:
             + fresh_s * w.freshness
         ) / (total_weight or 1.0)
 
+        penalty, penalty_terms = self._feedback_penalty(job)
+        total = max(0.0, total - penalty)
+
         reasons = [
             f"title {title_s:.2f}",
             f"keywords {keyword_s:.2f} ({len(matched)} matched)",
             f"location {loc_s:.2f}",
             f"freshness {fresh_s:.2f}",
         ]
+        if penalty:
+            reasons.append(f"-{penalty:.2f} from your feedback ({', '.join(penalty_terms)})")
 
         result = MatchResult(
             job=job, score=round(total, 3), matched_keywords=matched[:25], reasons=reasons

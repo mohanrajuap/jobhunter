@@ -9,7 +9,7 @@ import re
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -82,6 +82,10 @@ def looks_remote(*fields: str) -> bool:
     return bool(re.search(r"\b(remote|work from home|wfh|anywhere)\b", blob))
 
 
+def _never_cancel() -> bool:
+    return False
+
+
 class Source(ABC):
     """A place jobs come from. Implementations must never raise — return what they got."""
 
@@ -91,6 +95,19 @@ class Source(ABC):
         self.config = config or {}
         self.session = session or make_session()
         self.polite_delay = float(self.config.get("delay_seconds", 0.6))
+        # Replaced by build_sources() so a Stop click actually interrupts a search.
+        # Assigned per instance rather than passed through every subclass constructor.
+        self.should_cancel: Callable[[], bool] = _never_cancel
+        # Called with each chunk of jobs as they are found, so the UI can show results
+        # while a slow source is still working instead of waiting for the whole run.
+        self.on_jobs: Callable[[list[Job]], None] | None = None
+
+    @property
+    def cancelled(self) -> bool:
+        try:
+            return bool(self.should_cancel())
+        except Exception:
+            return False
 
     @abstractmethod
     def fetch(self, queries: list[str]) -> list[Job]:
@@ -110,9 +127,24 @@ class Source(ABC):
         response.raise_for_status()
         return response.text
 
+    def _emit(self, jobs: list[Job]) -> None:
+        """Hand a partial batch to the UI. Never let a display error break discovery."""
+        if self.on_jobs and jobs:
+            try:
+                self.on_jobs(jobs)
+            except Exception as exc:
+                log.debug("on_jobs callback failed: %s", exc)
+
     def _sleep(self) -> None:
-        if self.polite_delay > 0:
-            time.sleep(self.polite_delay * random.uniform(0.7, 1.4))
+        """Polite pause between requests, in short slices so Stop is responsive."""
+        if self.polite_delay <= 0:
+            return
+        remaining = self.polite_delay * random.uniform(0.7, 1.4)
+        while remaining > 0:
+            if self.cancelled:
+                return
+            time.sleep(min(0.25, remaining))
+            remaining -= 0.25
 
 
 class BoardSource(Source):
@@ -134,10 +166,14 @@ class BoardSource(Source):
     def fetch(self, queries: list[str]) -> list[Job]:  # noqa: ARG002 - see class docstring
         jobs: list[Job] = []
         for company in self.companies():
+            if self.cancelled:
+                log.info("%s: stopped before '%s'", self.name, company)
+                break
             try:
                 found = self.fetch_company(company)
                 log.info("%s: %s -> %d jobs", self.name, company, len(found))
                 jobs.extend(found)
+                self._emit(found)
             except requests.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else "?"
                 if status == 404:

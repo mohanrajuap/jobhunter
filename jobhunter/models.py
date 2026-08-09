@@ -91,6 +91,9 @@ class Status(str, Enum):
     # Manual-review mode: the form was filled and left open in the browser for you to
     # check and submit. Not terminal — you decide whether it becomes an application.
     FILLED = "filled_for_review"
+    # You told the app this job is not what you want. Never applied to, and the reasons
+    # feed back into scoring so similar jobs rank lower next time.
+    IRRELEVANT = "irrelevant"
 
 
 @dataclass

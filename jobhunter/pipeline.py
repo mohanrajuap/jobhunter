@@ -65,6 +65,12 @@ class Pipeline:
         self._mirror(outcome, None, "manual-by-user")
         return outcome
 
+    def record_irrelevant(self, job: Job, reason: str = "") -> Outcome:
+        """Mark a job as not what you want. Feeds back into future scoring."""
+        outcome = self.store.mark_irrelevant(job, reason)
+        self._mirror(outcome, None, "feedback")
+        return outcome
+
     def _say(self, message: str) -> None:
         log.info(message)
         self._progress(message)
@@ -149,23 +155,80 @@ class Pipeline:
         browser: BrowserSession | None = None,
         include_seen: bool = False,
         only: list[str] | None = None,
+        on_batch: Callable[[list[MatchResult]], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> tuple[list[MatchResult], dict[str, str]]:
         """Search and score without applying. This is what the GUI's Search button runs.
 
-        `include_seen` keeps already-applied jobs in the list so the GUI can label them
-        rather than hiding them. `only` restricts which sources run.
+        Scoring happens incrementally, one chunk at a time, and `on_batch` is called with
+        each set of new matches — so the UI fills in while a slow source is still going
+        rather than staying blank until everything finishes.
+
+        `include_seen` keeps already-applied jobs so the GUI can label them rather than
+        hide them. `only` restricts which sources run.
         """
         roles = self.load_roles()
         queries = self.build_queries(roles)
-        scorer = MultiRoleScorer(self.cfg, roles)
+        scorer = MultiRoleScorer(self.cfg, roles, feedback=self.store.feedback_signals())
+        cancel = should_cancel or (lambda: False)
 
-        jobs, errors = self.discover(queries, browser, only=only)
-        candidates = jobs if include_seen else self._filter_seen(jobs)
-        for job in jobs:
-            self.store.record_job(job)
+        recheck_days = int(self.cfg.get("apply.recheck_after_days", 30))
+        processed: set[str] = set()
+        matches: list[MatchResult] = []
+        seen_count = 0
 
-        matches = scorer.rank(candidates)
-        self._say(f"{len(matches)} jobs matched your roles")
+        def handle(found: list[Job]) -> list[MatchResult]:
+            """Score one chunk. Streaming means we keep the first version of a duplicate
+            rather than the most detailed one — a fair trade for live results."""
+            nonlocal seen_count
+            fresh: list[Job] = []
+            for job in found:
+                if not job.title or not job.company:
+                    continue
+                if job.fingerprint in processed:
+                    continue
+                processed.add(job.fingerprint)
+                self.store.record_job(job)
+
+                if not include_seen:
+                    if self.store.has_applied(job):
+                        seen_count += 1
+                        continue
+                    if recheck_days > 0 and self.store.seen_recently(job, recheck_days):
+                        seen_count += 1
+                        continue
+                fresh.append(job)
+
+            batch = scorer.rank(fresh) if fresh else []
+            if batch:
+                matches.extend(batch)
+                if on_batch:
+                    on_batch(batch)
+            return batch
+
+        errors: dict[str, str] = {}
+        sources = build_sources(
+            self.cfg, browser=browser, only=only, should_cancel=cancel, on_jobs=handle
+        )
+
+        for source in sources:
+            if cancel():
+                self._say("Stopped.")
+                break
+            try:
+                self._say(f"Searching {source.name}…")
+                found = source.fetch(queries)
+                # Sources emit as they go; this sweeps up anything not already handled.
+                handle(found)
+                self._say(f"{source.name}: {len(found)} jobs · {len(matches)} matched so far")
+            except Exception as exc:
+                log.error("source '%s' failed entirely: %s", source.name, exc)
+                errors[source.name] = str(exc)
+
+        self._say(
+            f"{len(processed)} jobs seen, {len(matches)} matched"
+            + (f" ({seen_count} already handled)" if seen_count else "")
+        )
         return matches, errors
 
     # --- phase 3: apply ---
