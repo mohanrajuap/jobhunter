@@ -175,6 +175,38 @@ class TestRoleSelection:
         assert len(pipeline.load_roles(["Nonexistent"])) == 2
 
 
+class TestExperienceResolution:
+    """What you state beats what a parser guessed. Resume year-detection reads any
+    "N years" it can find, often from one job rather than a career total — and being
+    wrong silently rejects jobs."""
+
+    def _config(self, tmp_path, **extra):
+        resume = tmp_path / "r.txt"
+        resume.write_text(SUPPORT_TEXT, encoding="utf-8")  # says 6 years
+        data = {
+            "profile": {},
+            "roles": [{"name": "R", "titles": ["Support Engineer"],
+                       "resumes": [{"path": str(resume)}]}],
+        }
+        data["profile"].update(extra.pop("profile", {}))
+        data["roles"][0].update(extra.pop("role", {}))
+        return Config(data=data)
+
+    def test_resume_years_used_when_nothing_configured(self, tmp_path):
+        roles = load_roles(self._config(tmp_path))
+        assert roles[0].profile.years_experience == 6.0
+
+    def test_configured_years_override_the_resume(self, tmp_path):
+        cfg = self._config(tmp_path, profile={"total_experience_years": 5})
+        assert load_roles(cfg)[0].profile.years_experience == 5.0
+
+    def test_role_can_state_its_own_years(self, tmp_path):
+        """A career-changer's Java experience isn't their support experience."""
+        cfg = self._config(tmp_path, profile={"total_experience_years": 5},
+                           role={"experience_years": 2})
+        assert load_roles(cfg)[0].profile.years_experience == 2.0
+
+
 class TestBackwardCompatibility:
     def test_flat_search_roles_becomes_one_role(self, tmp_path):
         resume = tmp_path / "r.txt"

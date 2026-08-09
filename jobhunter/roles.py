@@ -124,10 +124,15 @@ def _merge_profiles(
     for keyword in keywords:
         merged[keyword.lower().strip()] = 1.0
 
+    # An explicitly configured figure beats anything parsed out of a document. Resume
+    # year-detection reads whatever "N years" it can find, which is often a line about
+    # one job rather than a career total — and being wrong here silently rejects jobs.
+    resolved_years = fallback_years if fallback_years is not None else (max(years) if years else None)
+
     return ResumeProfile(
         keywords=merged,
         titles=[t.lower().strip() for t in titles if t],
-        years_experience=max(years) if years else fallback_years,
+        years_experience=resolved_years,
     )
 
 
@@ -167,6 +172,10 @@ def load_roles(config: Config, only_names: list[str] | None = None) -> list[Role
                 titles = [entry["name"]]
 
             role_keywords = list(entry.get("keywords", []) or [])
+            # A role can state its own years — a career-changer's Java experience is not
+            # their support experience.
+            role_years = entry.get("experience_years", fallback_years)
+            role_years = float(role_years) if role_years is not None else None
             variants = [
                 _load_variant(spec, global_keywords + role_keywords)
                 for spec in (entry.get("resumes", []) or [])
@@ -190,7 +199,7 @@ def load_roles(config: Config, only_names: list[str] | None = None) -> list[Role
                     overrides=dict(entry.get("overrides", {}) or {}),
                     enabled=True,
                     profile=_merge_profiles(
-                        variants, titles, global_keywords + role_keywords, fallback_years
+                        variants, titles, global_keywords + role_keywords, role_years
                     ),
                     cover_letter_path=Path(cover).expanduser() if cover else None,
                 )

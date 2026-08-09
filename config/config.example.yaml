@@ -158,6 +158,13 @@ search:
   min_experience_years: 3
   max_experience_years: 12
 
+  # Posted requirements are routinely inflated, so applying to a "5+ years" role with
+  # 3.5 is normal. This is how far below a stated requirement you'll still apply.
+  experience_slack_years: 2.0
+  # true skips the experience check altogether — useful when your resume's stated years
+  # don't reflect what you can do, or you're changing track.
+  ignore_experience: false
+
   # Applies to every source. LinkedIn and Naukri get it pushed into the query; ATS
   # boards and career pages have no such concept, so it is enforced centrally when
   # scoring. Overridable per run from the Search tab. null = any date.

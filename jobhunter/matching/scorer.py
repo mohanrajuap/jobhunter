@@ -107,6 +107,11 @@ class Scorer:
         self.remote_ok = bool(search.get("remote_ok", True))
         self.min_exp = search.get("min_experience_years")
         self.max_exp = search.get("max_experience_years")
+        # Skip the experience check entirely — useful when your resume's stated years
+        # don't reflect what you can actually do, or you're changing track.
+        self.ignore_experience = bool(search.get("ignore_experience", False))
+        # How far below a stated requirement you're still willing to apply.
+        self.experience_slack = float(search.get("experience_slack_years", 2.0))
         self.posted_within_days = search.get("posted_within_days")
         self.min_score = float(search.get("min_score", 0.45))
         self.blocked_companies = [c.lower().strip() for c in search.get("blocked_companies", []) if c]
@@ -129,8 +134,13 @@ class Scorer:
             freshness=float(w.get("freshness", 0.10)),
         )
 
-        # Titles to match against: explicit config roles first, then resume-derived ones.
-        self.target_titles = self.roles or self.profile.titles
+        # Titles to match against.
+        #
+        # The role's own titles win. `search.roles` is only a fallback for configs with
+        # no `roles:` block — using it first meant every role in a multi-role config was
+        # scored against the *global* title list, so picking "Java Developer" still
+        # matched against "Application Support Engineer" and scored 0.22 on a perfect hit.
+        self.target_titles = self.profile.titles or self.roles
 
         # Words from the roles you actually want are never allowed to become negative
         # signals. Without this, rejecting a few "Voice Process Support Engineer" jobs
@@ -195,12 +205,19 @@ class Scorer:
         return None, None
 
     def _experience_mismatch(self, job: Job) -> str | None:
+        if self.ignore_experience:
+            return None
+
         lo, hi = self._experience_range(job)
         mine = self.profile.years_experience
 
-        # Job asks for more than the user has.
-        if lo is not None and mine is not None and mine + 1 < lo:
-            return f"needs {lo:.0f}+ years, resume shows ~{mine:.0f}"
+        # Job asks for more than the user has, beyond the allowed stretch.
+        #
+        # The slack matters: posted requirements are routinely inflated, and applying to
+        # a "5+ years" role with 3.5 is normal. A tight tolerance here rejected 88 of 129
+        # real jobs in testing.
+        if lo is not None and mine is not None and mine + self.experience_slack < lo:
+            return f"needs {lo:.0f}+ years, you have ~{mine:.1f}"
         # User's floor: don't apply to roles below the configured minimum.
         if self.min_exp is not None and hi is not None and hi < float(self.min_exp):
             return f"tops out at {hi:.0f} years, below your minimum of {self.min_exp}"

@@ -123,6 +123,72 @@ class TestExperience:
         assert scorer.score(make_job(min_experience_years=4, max_experience_years=8)).passed
 
 
+class TestRoleTitlesDriveScoring:
+    """A role's own titles must win over the global `search.roles` list.
+
+    Preferring the global list meant every role in a multi-role config was scored
+    against the wrong titles — picking a Java role still matched against "Application
+    Support Engineer", so a perfect "Java Developer" hit scored 0.22 and was dropped.
+    """
+
+    def _java_scorer(self):
+        config = make_config(roles=["Application Support Engineer", "Site Reliability Engineer"])
+        java_profile = ResumeProfile(
+            keywords={"java": 1.0, "spring boot": 1.0, "microservices": 0.8},
+            titles=["java full stack developer", "java developer"],
+            years_experience=5,
+        )
+        return Scorer(config, java_profile)
+
+    def test_role_titles_are_used(self):
+        assert self._java_scorer().target_titles == ["java full stack developer", "java developer"]
+
+    def test_exact_role_title_scores_high(self):
+        result = self._java_scorer().score(make_job(title="Java Developer",
+                                                    description="java spring boot microservices"))
+        assert result.passed
+        assert result.score > 0.6
+
+    def test_other_roles_title_is_rejected(self):
+        result = self._java_scorer().score(make_job(title="Application Support Engineer",
+                                                    description="itil servicenow"))
+        assert not result.passed
+
+    def test_global_roles_used_when_profile_has_no_titles(self):
+        """Configs with no `roles:` block must keep working."""
+        scorer = Scorer(make_config(roles=["Application Support Engineer"]),
+                        ResumeProfile(keywords={"python": 1.0}, titles=[], years_experience=5))
+        assert scorer.target_titles == ["application support engineer"]
+
+
+class TestExperienceHandling:
+    def _scorer(self, years, **search):
+        profile = ResumeProfile(keywords={"java": 1.0}, titles=["java developer"],
+                                years_experience=years)
+        return Scorer(make_config(**search), profile)
+
+    def test_stated_requirement_within_slack_is_accepted(self):
+        """3.5 years against a "5+ years" posting is a normal stretch — posted
+        requirements are routinely inflated."""
+        scorer = self._scorer(3.5, experience_slack_years=2.0)
+        job = make_job(title="Java Developer", min_experience_years=5, max_experience_years=10)
+        assert scorer.score(job).passed
+
+    def test_far_beyond_slack_is_still_rejected(self):
+        scorer = self._scorer(3.5, experience_slack_years=2.0)
+        job = make_job(title="Java Developer", min_experience_years=12, max_experience_years=18)
+        assert not scorer.score(job).passed
+
+    def test_ignore_experience_skips_the_check(self):
+        scorer = self._scorer(3.5, ignore_experience=True)
+        job = make_job(title="Java Developer", min_experience_years=15, max_experience_years=20)
+        assert scorer.score(job).passed
+
+    def test_unknown_experience_never_rejects(self):
+        scorer = self._scorer(None)
+        assert scorer.score(make_job(title="Java Developer", min_experience_years=10)).passed
+
+
 class TestFreshness:
     def test_stale_posting_is_rejected(self, scorer):
         old = NOW - timedelta(days=90)
