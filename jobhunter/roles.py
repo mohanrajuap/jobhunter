@@ -131,11 +131,15 @@ def _merge_profiles(
     )
 
 
-def load_roles(config: Config) -> list[RoleTarget]:
+def load_roles(config: Config, only_names: list[str] | None = None) -> list[RoleTarget]:
     """Build role targets from config.
 
     Supports both layouts: the multi-role `roles:` list, and the older flat
     `search.roles` + `profile.resume_path` pair, which becomes a single role.
+
+    `only_names` narrows to specific roles *before* any resume is opened. Filtering
+    afterwards would parse every CV on the machine and report errors for roles the user
+    did not ask for — slow, and alarming for no reason.
     """
     global_keywords = list(config.get("search.keywords", []) or [])
     fallback_years = config.get("profile.total_experience_years")
@@ -143,6 +147,14 @@ def load_roles(config: Config) -> list[RoleTarget]:
 
     raw_roles = config.get("roles", []) or []
     roles: list[RoleTarget] = []
+
+    if raw_roles and only_names:
+        wanted = {name.strip().lower() for name in only_names}
+        narrowed = [r for r in raw_roles if str(r.get("name", "")).lower() in wanted]
+        if narrowed:
+            raw_roles = narrowed
+        else:
+            log.warning("No role matched %s — using all roles", sorted(wanted))
 
     if raw_roles:
         for entry in raw_roles:

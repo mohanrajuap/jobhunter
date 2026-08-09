@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import random
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,16 +84,7 @@ class Pipeline:
         Narrowing is what the UI's Role picker does: searching one role uses only its
         titles as queries and only its resumes, so results aren't diluted by the others.
         """
-        roles = load_roles(self.cfg)
-
-        if only_roles:
-            wanted = {name.strip().lower() for name in only_roles}
-            chosen = [r for r in roles if r.name.lower() in wanted]
-            if not chosen:
-                log.warning("No role matched %s — falling back to all roles", sorted(wanted))
-            else:
-                roles = chosen
-
+        roles = load_roles(self.cfg, only_names=only_roles)
         for role in roles:
             self._say(f"Role '{role.name}' — {len(role.resumes)} resume(s), "
                       f"{len(role.profile.keywords)} keywords")
@@ -191,6 +183,8 @@ class Pipeline:
         processed: set[str] = set()
         matches: list[MatchResult] = []
         seen_count = 0
+        rejections: dict[str, int] = {}
+        near_miss: list = [0.0, None]  # [best score, its MatchResult]
 
         def handle(found: list[Job]) -> list[MatchResult]:
             """Score one chunk. Streaming means we keep the first version of a duplicate
@@ -214,7 +208,22 @@ class Pipeline:
                         continue
                 fresh.append(job)
 
-            batch = scorer.rank(fresh) if fresh else []
+            if not fresh:
+                return []
+
+            scored = scorer.score_all(fresh)
+            batch = sorted([r for r in scored if r.passed], key=lambda r: -r.score)
+
+            # Remember why the rest were dropped — "0 matched" with no explanation is
+            # the single most useless thing this tool can say.
+            for result in scored:
+                if not result.passed and result.rejected_because:
+                    reason = re.sub(r"\d+(\.\d+)?", "N", result.rejected_because)
+                    rejections[reason[:70]] = rejections.get(reason[:70], 0) + 1
+                    if result.score > near_miss[0]:
+                        near_miss[0] = result.score
+                        near_miss[1] = result
+
             if batch:
                 matches.extend(batch)
                 if on_batch:
@@ -244,7 +253,50 @@ class Pipeline:
             f"{len(processed)} jobs seen, {len(matches)} matched"
             + (f" ({seen_count} already handled)" if seen_count else "")
         )
+        self._explain_rejections(rejections, near_miss, found_any=bool(matches))
         return matches, errors
+
+    def _explain_rejections(
+        self, rejections: dict[str, int], near_miss: list, found_any: bool
+    ) -> None:
+        """Say why jobs were filtered out, and what to change to loosen it."""
+        if not rejections:
+            return
+
+        top = sorted(rejections.items(), key=lambda kv: -kv[1])
+        headline = "Why the rest were filtered out:" if found_any else "Nothing matched. Why:"
+        self._say(headline)
+        for reason, count in top[:6]:
+            self._say(f"   {count:4} x  {reason}")
+
+        best_score, best = near_miss[0], near_miss[1]
+        if best is not None:
+            self._say(
+                f"   closest miss: {best.score:.0%} — {best.job.title[:50]} "
+                f"({best.job.company[:24]})"
+            )
+
+        # Point at the setting most likely responsible.
+        biggest = top[0][0].lower()
+        if "below threshold" in biggest:
+            threshold = self.cfg.get("search.min_score", 0.5)
+            hint = (
+                f"lower search.min_score (currently {threshold}) — the closest was "
+                f"{best_score:.0%}" if best_score else f"lower search.min_score ({threshold})"
+            )
+        elif "location" in biggest:
+            hint = "widen Locations on the Search tab, or clear it to allow anywhere"
+        elif "days ago" in biggest or "posted" in biggest:
+            hint = "set 'Posted within' to a longer window"
+        elif "years" in biggest:
+            hint = "adjust search.min_experience_years / max_experience_years"
+        elif "excluded keyword" in biggest:
+            hint = "remove that word from search.exclude_keywords"
+        elif "title" in biggest:
+            hint = "add more job-title variants to the role"
+        else:
+            hint = "run `jobhunter discover --show-rejected` for the full breakdown"
+        self._say(f"   → try: {hint}")
 
     # --- phase 3: apply ---
 
