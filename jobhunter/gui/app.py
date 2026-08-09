@@ -62,6 +62,9 @@ APPLY_MODES = {
     "Manual review — fill, I submit": "manual",
 }
 
+# Sentinel for the Role picker: search every enabled role at once.
+ALL_ROLES = "All roles"
+
 PROFILE_FIELDS: list[tuple[str, str]] = [
     ("Full name", "profile.full_name"),
     ("First name", "profile.first_name"),
@@ -250,6 +253,12 @@ class JobHunterApp(tk.Tk):
         self.search_btn = ttk.Button(row1, text="🔍  Search jobs", style="Primary.TButton",
                                      command=self.on_search)
         self.search_btn.pack(side="left")
+
+        ttk.Label(row1, text="Role").pack(side="left", padx=(18, 6))
+        self.role_var = tk.StringVar(value=ALL_ROLES)
+        self.role_box = ttk.Combobox(row1, textvariable=self.role_var, state="readonly",
+                                     width=24, values=[ALL_ROLES])
+        self.role_box.pack(side="left")
 
         ttk.Label(row1, text="Sources").pack(side="left", padx=(18, 6))
         self.source_vars: dict[str, tk.BooleanVar] = {
@@ -1053,6 +1062,7 @@ class JobHunterApp(tk.Tk):
                 self.apply_mode_var.set(label)
                 break
 
+        self._refresh_role_picker()
         self.locations_var.set(", ".join(self.cfg.get("search.locations", []) or []))
         configured_age = self.cfg.get("search.posted_within_days")
         label = next(
@@ -1067,6 +1077,27 @@ class JobHunterApp(tk.Tk):
             else:
                 var.set(bool(self.cfg.get(f"sources.{name}.enabled", False)))
         self._update_source_button()
+
+    def _refresh_role_picker(self) -> None:
+        """Keep the Role dropdown in step with whatever is on the Roles & Resumes tab."""
+        if not self.cfg:
+            return
+        names = [
+            r.get("name", "unnamed")
+            for r in (self.cfg.get("roles", []) or [])
+            if r.get("enabled", True)
+        ]
+        if not names:
+            names = [r for r in (self.cfg.get("search.roles", []) or [])][:1] or []
+
+        self.role_box.configure(values=[ALL_ROLES] + names)
+        if self.role_var.get() not in ([ALL_ROLES] + names):
+            self.role_var.set(ALL_ROLES)
+
+    def selected_roles(self) -> list[str] | None:
+        """None means every role; otherwise the single role the user picked."""
+        chosen = self.role_var.get()
+        return None if chosen == ALL_ROLES else [chosen]
 
     def _push_run_settings(self) -> None:
         """Copy the Search-tab controls into the in-memory config before a run.
@@ -1250,6 +1281,8 @@ class JobHunterApp(tk.Tk):
 
         self.cfg.set("roles", cleaned)
         self._save_config(f"Saved {len(cleaned)} role(s)")
+        # So a newly added role is immediately pickable on the Search tab.
+        self._refresh_role_picker()
 
     def _save_config(self, message: str) -> None:
         assert self.cfg is not None
@@ -1299,6 +1332,11 @@ class JobHunterApp(tk.Tk):
 
         cfg = self.cfg
         self._match_seq = 0
+        roles = self.selected_roles()
+        self._append_log(
+            f"Searching as: {', '.join(roles) if roles else 'all roles'} "
+            f"· {len(sources)} source(s)"
+        )
 
         def task(worker: Worker) -> None:
             from ..browser import browser_from_config
@@ -1316,7 +1354,7 @@ class JobHunterApp(tk.Tk):
                 worker.send("batch", batch)
 
             kwargs = dict(
-                include_seen=True, only=sources,
+                include_seen=True, only=sources, only_roles=roles,
                 on_batch=stream, should_cancel=lambda: worker.cancelled,
             )
             if needs_browser:

@@ -77,8 +77,22 @@ class Pipeline:
 
     # --- phase 1: roles & queries ---
 
-    def load_roles(self) -> list[RoleTarget]:
+    def load_roles(self, only_roles: list[str] | None = None) -> list[RoleTarget]:
+        """Load role targets, optionally narrowed to specific ones by name.
+
+        Narrowing is what the UI's Role picker does: searching one role uses only its
+        titles as queries and only its resumes, so results aren't diluted by the others.
+        """
         roles = load_roles(self.cfg)
+
+        if only_roles:
+            wanted = {name.strip().lower() for name in only_roles}
+            chosen = [r for r in roles if r.name.lower() in wanted]
+            if not chosen:
+                log.warning("No role matched %s — falling back to all roles", sorted(wanted))
+            else:
+                roles = chosen
+
         for role in roles:
             self._say(f"Role '{role.name}' — {len(role.resumes)} resume(s), "
                       f"{len(role.profile.keywords)} keywords")
@@ -157,6 +171,7 @@ class Pipeline:
         only: list[str] | None = None,
         on_batch: Callable[[list[MatchResult]], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        only_roles: list[str] | None = None,
     ) -> tuple[list[MatchResult], dict[str, str]]:
         """Search and score without applying. This is what the GUI's Search button runs.
 
@@ -165,9 +180,9 @@ class Pipeline:
         rather than staying blank until everything finishes.
 
         `include_seen` keeps already-applied jobs so the GUI can label them rather than
-        hide them. `only` restricts which sources run.
+        hide them. `only` restricts which sources run, `only_roles` which roles.
         """
-        roles = self.load_roles()
+        roles = self.load_roles(only_roles)
         queries = self.build_queries(roles)
         scorer = MultiRoleScorer(self.cfg, roles, feedback=self.store.feedback_signals())
         cancel = should_cancel or (lambda: False)

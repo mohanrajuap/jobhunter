@@ -125,6 +125,56 @@ class TestMultiRoleScoring:
         assert load_roles(cfg) == []
 
 
+class TestRoleSelection:
+    """The Search tab's Role picker. Choosing one role must narrow both what is
+    searched for and which resume is sent."""
+
+    def _pipeline(self, tmp_path):
+        from jobhunter.pipeline import Pipeline
+        from jobhunter.store import Store
+
+        support = tmp_path / "support.txt"
+        support.write_text(SUPPORT_TEXT, encoding="utf-8")
+        devops = tmp_path / "devops.txt"
+        devops.write_text(DEVOPS_TEXT, encoding="utf-8")
+
+        cfg = Config(data={
+            "paths": {"data_dir": str(tmp_path)},
+            "search": {"max_queries_per_role": 4},
+            "roles": [
+                {"name": "Support", "titles": ["Application Support Engineer"],
+                 "resumes": [{"path": str(support), "label": "support"}]},
+                {"name": "Java", "titles": ["Java Developer", "Java Backend Developer"],
+                 "resumes": [{"path": str(devops), "label": "java"}]},
+            ],
+        })
+        return Pipeline(cfg, store=Store(tmp_path / "t.sqlite3"))
+
+    def test_no_selection_loads_every_role(self, tmp_path):
+        pipeline = self._pipeline(tmp_path)
+        assert [r.name for r in pipeline.load_roles(None)] == ["Support", "Java"]
+
+    def test_selecting_one_role_narrows_the_queries(self, tmp_path):
+        pipeline = self._pipeline(tmp_path)
+        roles = pipeline.load_roles(["Java"])
+        assert [r.name for r in roles] == ["Java"]
+        assert pipeline.build_queries(roles) == ["Java Developer", "Java Backend Developer"]
+
+    def test_selecting_one_role_narrows_the_resumes(self, tmp_path):
+        pipeline = self._pipeline(tmp_path)
+        roles = pipeline.load_roles(["Java"])
+        assert [v.label for r in roles for v in r.resumes] == ["java"]
+
+    def test_role_matching_is_case_insensitive(self, tmp_path):
+        pipeline = self._pipeline(tmp_path)
+        assert [r.name for r in pipeline.load_roles(["java"])] == ["Java"]
+
+    def test_unknown_role_falls_back_to_all(self, tmp_path):
+        """Better to search everything than to silently return nothing."""
+        pipeline = self._pipeline(tmp_path)
+        assert len(pipeline.load_roles(["Nonexistent"])) == 2
+
+
 class TestBackwardCompatibility:
     def test_flat_search_roles_becomes_one_role(self, tmp_path):
         resume = tmp_path / "r.txt"

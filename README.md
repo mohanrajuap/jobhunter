@@ -179,6 +179,67 @@ and history stay as normal files beside it. Chromium still needs installing once
 
 ---
 
+## Choosing what to search for
+
+A **role** is the unit of targeting. It holds the job titles you want, extra keywords,
+and the resume(s) to send. To hunt for something new — say Java Developer — add a role:
+
+**Roles & Resumes** → **Add** → fill in:
+
+```
+Role name:   Java Developer
+
+Job titles (one per line):
+  Java Developer
+  Java Backend Developer
+  Senior Java Developer
+  Java Software Engineer
+
+Extra keywords (one per line):
+  java
+  spring boot
+  hibernate
+  microservices
+  kafka
+
+Resumes:  Add resume… → your Java CV
+```
+
+→ **Apply changes to this role** → **Save roles**
+
+Then on the **Search** tab pick it from the **Role** dropdown and hit Search. The
+dropdown also has **All roles**, which searches every enabled role at once.
+
+### What the titles actually do
+
+Two separate jobs, which is worth understanding:
+
+1. **They become search queries** on Naukri and LinkedIn — the only sources that take a
+   keyword. The first four titles per role are used (`search.max_queries_per_role`).
+2. **They drive the title score**, which is 45% of the match. Scoring pulls out the
+   *distinctive* words — for "Java Developer" that's `java`, since "developer" appears in
+   every title — and a job missing them is penalised. So a "Python Developer" posting
+   won't be mistaken for a match.
+
+Board sources (Greenhouse, Lever, Workday…) ignore the queries entirely: they return
+their whole board and the scorer filters it. That's why an unusually-titled job can still
+surface from a board but never from a Naukri search.
+
+### Getting the titles right
+
+List the **variations employers actually use**, not one canonical name. "Java Developer"
+alone misses "Java Backend Engineer" and "Software Engineer - Java". Each extra title is
+another Naukri/LinkedIn query and another thing the scorer can match.
+
+Keep them recognisable as titles — `search.roles` entries like "java" or "backend" score
+poorly because there is no distinctive word to anchor on.
+
+If you want the resume to do the work instead, leave `use_resume_keywords: true` (the
+default) and the skills parsed out of your CV feed the keyword score, which is a further
+35% of the match.
+
+---
+
 ## Multiple roles, multiple resumes
 
 ```yaml

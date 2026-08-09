@@ -1,0 +1,286 @@
+profile:
+  full_name: Your Name
+  first_name: Your
+  last_name: Name
+  email: you@example.com
+  phone: +91 90000 00000
+  location: Chennai, India
+  city: Chennai
+  state: Tamil Nadu
+  country: India
+  postal_code: '600001'
+  address: ''
+  linkedin: https://www.linkedin.com/in/your-handle
+  github: ''
+  portfolio: ''
+  resume_path: C:/Users/raju2/OneDrive/Documents/New folder/Mohanraju_A_P.pdf
+  cover_letter_path: ''
+  cover_letter_text: ''
+  current_company: ''
+  current_ctc: 12 LPA
+  expected_ctc: 18 LPA
+  notice_period: 30 days
+  total_experience_years: 5.0
+  heard_from: Company website
+  work_authorized: 'Yes'
+  needs_sponsorship: 'No'
+  willing_to_relocate: 'Yes'
+  open_to_remote: 'Yes'
+  answers:
+    why do you want to work: I'm looking for a role where I can go deeper on reliability
+      engineering at scale, and your team's work is a strong fit for my background.
+    reason for change: Looking for broader ownership and more technical depth.
+    current ctc: 12 LPA
+    expected ctc: 18 LPA
+    notice period: 30 days
+    willing to relocate: 'Yes'
+    how many years: '5'
+    highest qualification: Bachelor of Engineering
+roles:
+- name: Java Developer
+  enabled: true
+  titles:
+  - Java Developer
+  - Java Backend Developer
+  - Senior Java Developer
+  - Java Software Engineer
+  keywords:
+  - java
+  - spring boot
+  - hibernate
+  - microservices
+  - rest api
+  - maven
+  - kafka
+  resumes:
+  - path: C:/Users/raju2/AppData/Local/Temp/claude/C--Users-raju2-Downloads/737a436d-1409-44aa-b389-6272b20da619/scratchpad/java_resume.txt
+    label: java
+search:
+  roles:
+  - Application Support Engineer
+  - Site Reliability Engineer
+  - Production Support Engineer
+  - DevOps Engineer
+  max_queries_per_role: 4
+  use_resume_keywords: true
+  extra_queries_from_resume: 2
+  keywords:
+  - incident management
+  - sql
+  - linux
+  - python
+  - monitoring
+  must_have_any: []
+  exclude_keywords:
+  - intern
+  - internship
+  - unpaid
+  - commission only
+  - sales executive
+  - bpo
+  - voice process
+  - night shift only
+  blocked_companies: []
+  locations:
+  - Chennai
+  - Bangalore
+  - Bengaluru
+  - Hyderabad
+  - India
+  remote_ok: true
+  min_experience_years: 3
+  max_experience_years: 12
+  posted_within_days: 7
+  min_score: 0.45
+  strict_title_match: false
+  weights:
+    title: 0.45
+    keywords: 0.35
+    location: 0.1
+    freshness: 0.1
+sources:
+  naukri:
+    enabled: true
+    max_pages: 3
+    results_per_page: 20
+    experience_years: 5
+    job_age_days: 7
+    locations:
+    - Chennai
+    - Bangalore
+    - Hyderabad
+    delay_seconds: 2.0
+  greenhouse:
+    enabled: true
+    boards:
+    - databricks
+    - razorpaysoftwareprivatelimited
+    - phonepe
+    - postman
+    - groww
+    - slice
+    - turing
+    - observeai
+    - sigmoid
+    - cloudflare
+    - datadog
+    - elastic
+    - gitlab
+    - mongodb
+    - twilio
+    - okta
+    - zscaler
+    - rubrik
+    - fivetran
+    - commvault
+    - newrelic
+    - coinbase
+    - clickhouse
+    - yugabyte
+    - sumologic
+    - singlestore
+    - cockroachlabs
+    - starburst
+    - jfrog
+  lever:
+    enabled: true
+    companies:
+    - paytm
+    - meesho
+    - zeta
+    - mindtickle
+    - hevodata
+    - epifi
+    - cred
+    - eternal
+  ashby:
+    enabled: true
+    companies:
+    - ramp
+    - linear
+    - vanta
+    - confluent
+    - navi
+    - atlan
+    - skyflow
+    - spotdraft
+  smartrecruiters:
+    enabled: true
+    companies:
+    - Freshworks
+    - Visa
+    - swiggy
+    - servicenow
+    - unacademy
+    - grab
+    detail_limit: 30
+    max_postings_per_company: 200
+  workable:
+    enabled: true
+    companies: []
+  recruitee:
+    enabled: false
+    companies: []
+  custom_career_pages:
+  - name: Zoho
+    url: https://careers.zohocorp.com/jobs/Careers
+    default_location: Chennai, India
+  career_page_options:
+    max_links_per_page: 60
+    fetch_descriptions: true
+    delay_seconds: 1.0
+    use_browser_fallback: true
+    min_jobs_before_fallback: 3
+    render_wait_ms: 3500
+  linkedin:
+    enabled: true
+    locations:
+    - Chennai, Tamil Nadu, India
+    max_pages: 1
+    posted_within_days: 7
+    remote_only: false
+    delay_seconds: 2.0
+    detail_limit: 0
+  workday:
+    enabled: true
+    companies:
+    - name: BrowserStack
+      tenant: browserstack
+      wd: wd3
+      site: External
+    - name: Salesforce
+      tenant: salesforce
+      wd: wd12
+      site: External_Career_Site
+    detail_limit: 25
+    max_postings_per_company: 200
+    delay_seconds: 1.0
+  kula:
+    enabled: true
+    companies:
+    - account: cashfree
+      name: Cashfree Payments
+    delay_seconds: 1.0
+apply:
+  dry_run: true
+  max_applications_per_day: 20
+  max_per_company_per_day: 3
+  delay_seconds:
+  - 25
+  - 60
+  headless: false
+  slow_mo_ms: 0
+  timeout_seconds: 30
+  locale: en-IN
+  screenshot_on_failure: true
+  browser_profile_dir: .state/browser
+  recheck_after_days: 30
+  mode: auto
+  browser: ''
+  use_existing_profile: false
+  browser_executable: ''
+  browser_channel: ''
+notify:
+  email:
+    enabled: true
+    smtp_host: smtp.gmail.com
+    smtp_port: 587
+    use_tls: true
+    username: env:SMTP_USER
+    password: env:SMTP_PASS
+    from: env:SMTP_USER
+    to:
+    - you@example.com
+  telegram:
+    enabled: false
+    bot_token: env:TELEGRAM_BOT_TOKEN
+    chat_id: env:TELEGRAM_CHAT_ID
+  desktop:
+    enabled: true
+schedule:
+  time: 08:00
+  timezone: Asia/Kolkata
+  days:
+  - mon
+  - tue
+  - wed
+  - thu
+  - fri
+  run_on_start: false
+paths:
+  state_dir: .state
+  data_dir: data
+  log_dir: logs
+  report_dir: reports
+  screenshot_dir: screenshots
+http:
+  timeout_seconds: 20
+log_level: INFO
+database:
+  oracle:
+    enabled: true
+    user: learn
+    password: env:ORACLE_PASSWORD
+    dsn: localhost:1521/FREEPDB1
+    table: JOBHUNTER_APPLICATIONS
+    create_table: true
