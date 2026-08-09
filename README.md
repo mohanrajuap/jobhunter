@@ -230,6 +230,32 @@ Naukri jobs come out in three ways:
 
 ---
 
+## Company career pages
+
+Add any company's careers URL on the **Career Pages** tab. Two things happen, in order:
+
+1. **ATS sniffing.** Most "custom" career pages are a thin wrapper over Greenhouse, Lever,
+   Ashby, Workable or SmartRecruiters. If the page links to one, the board slug is pulled
+   out and that platform's API is used — clean structured data, no scraping. Razorpay, for
+   example, resolves to a Greenhouse board and returns 23 jobs directly.
+2. **Scraping.** Only if sniffing finds nothing. If the job list is drawn in JavaScript
+   (most modern career sites), the page is re-opened in the browser and the rendered DOM
+   is read instead.
+
+Scraped links are filtered hard, because a careers page contains far more navigation than
+jobs — "Log in", "Skip to main content" and "Explore jobs" all sit under a `/careers/` path
+and would otherwise sail through. If a real posting gets filtered out, set an explicit
+**Job link selector** (a CSS selector) for that page and it's trusted verbatim.
+
+Use the **🔎 Test this page** button after adding one. It fetches immediately and tells you
+what it found, which board it detected, or why it found nothing — detection failures are
+otherwise silent until a real search comes back empty.
+
+Sniffing is by far the more reliable path. If a page scrapes badly, look for the job board
+behind it and point the URL straight there.
+
+---
+
 ## LinkedIn
 
 Discovery uses LinkedIn's logged-out job search, so finding jobs needs no account. In

@@ -133,6 +133,7 @@ class JobHunterApp(tk.Tk):
             self._set_status(f"Loaded {self.cfg.path}")
             self._populate_profile()
             self._populate_roles()
+            self._populate_pages()
             self._populate_run_settings()
         except ConfigError as exc:
             self.cfg = None
@@ -164,6 +165,7 @@ class JobHunterApp(tk.Tk):
         self._build_search_tab()
         self._build_profile_tab()
         self._build_roles_tab()
+        self._build_career_pages_tab()
         self._build_log_tab()
 
         bar = ttk.Frame(self)
@@ -531,7 +533,195 @@ class JobHunterApp(tk.Tk):
         widget.pack(fill="x", pady=(2, 10))
         return widget
 
-    # --- tab 4: activity ---
+    # --- tab 4: company career pages ---
+
+    def _build_career_pages_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="  Career Pages  ")
+
+        ttk.Label(
+            tab,
+            text="Add any company's careers URL. JobHunter works out which job board is behind "
+                 "the page and reads it directly — most 'custom' career pages are really "
+                 "Greenhouse, Lever or Ashby underneath. If the job list is drawn by JavaScript, "
+                 "it re-opens the page in the browser and reads the rendered list instead.",
+            style="Muted.TLabel", wraplength=1150,
+        ).pack(anchor="w", padx=16, pady=(14, 8))
+
+        body = ttk.Frame(tab)
+        body.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="both", expand=True, padx=(0, 16))
+        ttk.Label(left, text="Career pages", style="Section.TLabel").pack(anchor="w")
+        self.pages_list = tk.Listbox(left, height=16, exportselection=False, relief="flat",
+                                     bg=theme.CARD, fg=theme.INK, selectbackground=theme.PRIMARY,
+                                     selectforeground="#fff", highlightthickness=1,
+                                     highlightbackground=theme.LINE)
+        self.pages_list.pack(fill="both", expand=True)
+        self.pages_list.bind("<<ListboxSelect>>", lambda _e: self._show_page())
+
+        list_btns = ttk.Frame(left)
+        list_btns.pack(fill="x", pady=6)
+        ttk.Button(list_btns, text="Add", width=8, command=self.on_add_page).pack(side="left")
+        ttk.Button(list_btns, text="Delete", width=8, command=self.on_delete_page).pack(
+            side="left", padx=4)
+        ttk.Button(list_btns, text="🔎  Test this page", style="Ghost.TButton",
+                   command=self.on_test_page).pack(side="left", padx=4)
+
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="y")
+
+        for label, attr, width, hint in [
+            ("Company name", "page_name_var", 40, ""),
+            ("Careers URL", "page_url_var", 40, "https://company.com/careers"),
+            ("Default location", "page_location_var", 40, "optional, e.g. Chennai, India"),
+            ("Job link selector", "page_selector_var", 40, "optional CSS, only if detection fails"),
+        ]:
+            ttk.Label(right, text=label, style="Section.TLabel").pack(anchor="w", pady=(8, 0))
+            var = tk.StringVar()
+            setattr(self, attr, var)
+            ttk.Entry(right, textvariable=var, width=width).pack(anchor="w")
+            if hint:
+                ttk.Label(right, text=hint, style="Muted.TLabel").pack(anchor="w")
+
+        save_row = ttk.Frame(right)
+        save_row.pack(fill="x", pady=16)
+        ttk.Button(save_row, text="Apply changes", command=self._capture_page).pack(side="left")
+        ttk.Button(save_row, text="💾  Save career pages", style="Primary.TButton",
+                   command=self.on_save_pages).pack(side="left", padx=8)
+
+        self._pages_data: list[dict[str, Any]] = []
+        self._current_page: int | None = None
+
+    def _populate_pages(self) -> None:
+        if not self.cfg:
+            return
+        self._pages_data = [dict(p) for p in (self.cfg.get("sources.custom_career_pages", []) or [])]
+        self._refresh_pages_list()
+
+    def _refresh_pages_list(self) -> None:
+        self.pages_list.delete(0, "end")
+        for page in self._pages_data:
+            self.pages_list.insert("end", f"{page.get('name', '?')}  —  {page.get('url', '')}")
+        if self._pages_data and self._current_page is None:
+            self.pages_list.selection_set(0)
+            self._show_page()
+
+    def _show_page(self) -> None:
+        selection = self.pages_list.curselection()
+        if not selection:
+            return
+        self._current_page = selection[0]
+        page = self._pages_data[self._current_page]
+        self.page_name_var.set(page.get("name", ""))
+        self.page_url_var.set(page.get("url", ""))
+        self.page_location_var.set(page.get("default_location", ""))
+        self.page_selector_var.set(page.get("job_link_selector", ""))
+
+    def _capture_page(self) -> None:
+        if self._current_page is None:
+            return
+        page = self._pages_data[self._current_page]
+        page["name"] = self.page_name_var.get().strip() or "Unnamed"
+        page["url"] = self.page_url_var.get().strip()
+        for key, var in (("default_location", self.page_location_var),
+                         ("job_link_selector", self.page_selector_var)):
+            value = var.get().strip()
+            if value:
+                page[key] = value
+            else:
+                page.pop(key, None)
+        self._refresh_pages_list()
+        self._set_status(f"'{page['name']}' updated (not yet saved)")
+
+    def on_add_page(self) -> None:
+        self._pages_data.append({"name": "New company", "url": ""})
+        self._current_page = len(self._pages_data) - 1
+        self._refresh_pages_list()
+        self.pages_list.selection_clear(0, "end")
+        self.pages_list.selection_set(self._current_page)
+        self._show_page()
+
+    def on_delete_page(self) -> None:
+        if self._current_page is None or not self._pages_data:
+            return
+        name = self._pages_data[self._current_page].get("name", "this page")
+        if messagebox.askyesno("Delete", f"Remove '{name}'?"):
+            self._pages_data.pop(self._current_page)
+            self._current_page = None
+            self._refresh_pages_list()
+
+    def on_test_page(self) -> None:
+        """Fetch one page now and report what was found — detection can fail quietly,
+        so this is how you find out before relying on it in a real search."""
+        self._capture_page()
+        if self._current_page is None:
+            messagebox.showinfo("Pick a page", "Select or add a career page first.")
+            return
+        page = dict(self._pages_data[self._current_page])
+        if not page.get("url"):
+            messagebox.showerror("No URL", "Enter the careers URL first.")
+            return
+        if self.worker.busy:
+            messagebox.showinfo("Busy", "A task is already running.")
+            return
+
+        self._begin(f"Testing {page.get('name')}…")
+        cfg = self.cfg
+
+        def task(worker: Worker) -> None:
+            from ..browser import browser_from_config
+            from ..sources.base import make_session
+            from ..sources.career_page import CareerPageSource
+
+            options = dict(cfg.section("sources.career_page_options")) if cfg else {}
+            options.update({"pages": [page], "fetch_descriptions": False})
+
+            with browser_from_config(cfg) as browser:
+                source = CareerPageSource(options, session=make_session(), browser=browser)
+                source.should_cancel = lambda: worker.cancelled
+                jobs = source.fetch([])
+            worker.send("page_test", (page.get("name", ""), jobs))
+
+        self.worker.start(task)
+
+    def _show_page_test(self, payload: tuple[str, list]) -> None:
+        name, jobs = payload
+        if not jobs:
+            messagebox.showwarning(
+                "Nothing found",
+                f"No jobs found on {name}.\n\n"
+                "Either the page needs a CSS selector for its job links, or the listing "
+                "lives on a separate board — try pointing the URL straight at that.",
+            )
+            return
+        sample = "\n".join(f"  • {j.title}  ({j.location or 'location n/a'})" for j in jobs[:8])
+        extra = f"\n  …and {len(jobs) - 8} more" if len(jobs) > 8 else ""
+        messagebox.showinfo(
+            "Career page works",
+            f"Found {len(jobs)} jobs on {name} (via {jobs[0].ats}):\n\n{sample}{extra}",
+        )
+
+    def on_save_pages(self) -> None:
+        if not self.cfg:
+            messagebox.showerror("No config", "Load a config file first.")
+            return
+        self._capture_page()
+
+        cleaned = []
+        for page in self._pages_data:
+            if not page.get("url"):
+                messagebox.showerror("Missing URL", f"'{page.get('name')}' has no careers URL.")
+                return
+            cleaned.append(page)
+
+        self.cfg.set("sources.custom_career_pages", cleaned)
+        self.source_vars["career_pages"].set(bool(cleaned))
+        self._update_source_button()
+        self._save_config(f"Saved {len(cleaned)} career page(s)")
+
+    # --- tab 5: activity ---
 
     def _build_log_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -817,7 +1007,12 @@ class JobHunterApp(tk.Tk):
             from ..pipeline import Pipeline
 
             pipeline = Pipeline(cfg, progress=lambda m: worker.send("progress", m))
-            needs_browser = "naukri" in sources and cfg.get("sources.naukri.enabled", False)
+            # Naukri needs a logged-in browser; career pages may need one to render a
+            # JavaScript job list.
+            needs_browser = (
+                ("naukri" in sources and cfg.get("sources.naukri.enabled", False))
+                or ("career_pages" in sources and bool(cfg.get("sources.custom_career_pages", [])))
+            )
 
             def stream(batch: list[MatchResult]) -> None:
                 worker.send("batch", batch)
@@ -1119,6 +1314,8 @@ class JobHunterApp(tk.Tk):
                 self._show_results(message.payload)
             elif message.kind == "outcome":
                 self._refresh_tree()
+            elif message.kind == "page_test":
+                self._show_page_test(message.payload)
             elif message.kind == "await_user":
                 self._prompt_manual_submit(message.payload)
             elif message.kind == "error":

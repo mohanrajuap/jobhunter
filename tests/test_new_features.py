@@ -389,6 +389,97 @@ class TestLinkedInDetailParsing:
         assert match and int(match.group(1).replace(",", "")) == expected
 
 
+class TestCareerPageLinkFilter:
+    """A careers page is mostly navigation. Letting nav links through fills the grid
+    with 'Log in' and 'Skip to main content'."""
+
+    BASE = "https://www.acme.com/careers/"
+
+    @pytest.mark.parametrize("title,url", [
+        ("Technical Support Engineers", "https://www.acme.com/careers/technical-support.html"),
+        ("Application Support Engineer", "https://www.acme.com/careers/jobs/app-support-4471"),
+        ("Senior Data Analyst", "https://www.acme.com/careers/positions/senior-data-analyst"),
+    ])
+    def test_real_postings_are_kept(self, title, url):
+        from jobhunter.sources.career_page import looks_like_a_job_link
+
+        assert looks_like_a_job_link(title, url, self.BASE)
+
+    @pytest.mark.parametrize("title,url", [
+        ("Log in", "https://www.acme.com/careers/login"),
+        ("Get Started", "https://www.acme.com/careers/signup"),
+        ("Skip to main content", "https://www.acme.com/careers/#main"),
+        ("Explore jobs", "https://www.acme.com/careers/jobs/"),
+        ("Careers", "https://www.acme.com/careers/"),
+        ("View all", "https://www.acme.com/careers/all"),
+        ("Life at Acme", "https://www.acme.com/careers/life.html"),
+        ("Benefits", "https://www.acme.com/careers/benefits"),
+    ])
+    def test_navigation_is_rejected(self, title, url):
+        from jobhunter.sources.career_page import looks_like_a_job_link
+
+        assert not looks_like_a_job_link(title, url, self.BASE)
+
+    def test_self_link_is_rejected(self):
+        from jobhunter.sources.career_page import looks_like_a_job_link
+
+        assert not looks_like_a_job_link("Careers Page", self.BASE, self.BASE)
+
+    def test_single_word_is_rejected(self):
+        from jobhunter.sources.career_page import looks_like_a_job_link
+
+        assert not looks_like_a_job_link("Jobs", "https://www.acme.com/careers/x", self.BASE)
+
+
+class TestAtsSniffing:
+    """Most 'custom' career pages are a wrapper over a known board — detecting that is
+    far more reliable than scraping the page."""
+
+    @pytest.mark.parametrize("html,expected", [
+        ('<a href="https://boards.greenhouse.io/razorpay">Jobs</a>', ("greenhouse", "razorpay")),
+        ('<iframe src="https://jobs.lever.co/acme"></iframe>', ("lever", "acme")),
+        ('<a href="https://jobs.ashbyhq.com/ramp">Careers</a>', ("ashby", "ramp")),
+        ('<a href="https://jobs.smartrecruiters.com/Visa">Roles</a>', ("smartrecruiters", "Visa")),
+    ])
+    def test_boards_are_detected(self, html, expected):
+        from jobhunter.sources.career_page import sniff_ats
+
+        assert sniff_ats(html) == expected
+
+    def test_plain_page_detects_nothing(self):
+        from jobhunter.sources.career_page import sniff_ats
+
+        assert sniff_ats("<html><body><h1>Work with us</h1></body></html>") is None
+
+
+class TestCareerPageSourceWiring:
+    def test_pages_from_config_are_loaded(self):
+        from jobhunter.sources import build_sources
+
+        cfg = Config(data={"sources": {
+            "custom_career_pages": [{"name": "Acme", "url": "https://acme.com/careers"}],
+        }})
+        sources = build_sources(cfg, only=["career_pages"])
+        assert len(sources) == 1 and sources[0].name == "career_page"
+
+    def test_no_pages_means_no_source(self):
+        """Selecting career pages with none configured must not silently build one."""
+        from jobhunter.sources import build_sources
+
+        cfg = Config(data={"sources": {"custom_career_pages": []}})
+        assert build_sources(cfg, only=["career_pages"]) == []
+
+    def test_browser_is_passed_through_for_js_pages(self):
+        from jobhunter.sources import build_sources
+
+        cfg = Config(data={"sources": {
+            "custom_career_pages": [{"name": "Acme", "url": "https://acme.com/careers"}],
+        }})
+        sentinel = object()
+        source = build_sources(cfg, browser=sentinel, only=["career_pages"])[0]
+        assert source.browser is sentinel
+
+
 class TestSourceSelection:
     def test_only_filters_sources(self):
         from jobhunter.sources import build_sources

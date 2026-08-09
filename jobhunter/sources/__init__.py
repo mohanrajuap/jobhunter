@@ -83,10 +83,19 @@ def build_sources(
         sources.append(LinkedInSource(linkedin_cfg, session=session))
 
     pages = config.get("sources.custom_career_pages", []) or []
-    if pages and wanted("career_pages"):
-        page_cfg = dict(config.section("sources.career_page_options"))
-        page_cfg["pages"] = pages
-        sources.append(CareerPageSource(page_cfg, session=session))
+    if wanted("career_pages"):
+        if pages:
+            page_cfg = dict(config.section("sources.career_page_options"))
+            page_cfg["pages"] = pages
+            # The browser lets it read career pages that build their job list in JS.
+            sources.append(CareerPageSource(page_cfg, session=session, browser=browser))
+        elif only and "career_pages" in {s.lower() for s in only}:
+            # Explicitly asked for, but nothing to search — say so instead of silently
+            # returning nothing.
+            log.warning(
+                "Company career pages are selected but none are configured. "
+                "Add them on the Career Pages tab (or sources.custom_career_pages)."
+            )
 
     for source in sources:
         if should_cancel is not None:
