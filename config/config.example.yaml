@@ -237,6 +237,23 @@ sources:
       - observeai
       - sigmoid
       # --- global, with real India engineering offices ---
+      # The number after each is how many India-located roles it had when this file
+      # was written. Boards with fewer than ~3 were left out deliberately: they cost
+      # a fetch and return nothing your location filter would keep.
+      - okta            # ~98 in India
+      - zscaler         # ~71
+      - rubrik          # ~28
+      - fivetran        # ~17
+      - commvault       # ~14
+      - newrelic        # ~10
+      - coinbase        # ~10
+      - clickhouse      # ~10
+      - yugabyte        # ~9
+      - sumologic       # ~9
+      - singlestore     # ~9
+      - cockroachlabs   # ~4
+      - starburst       # ~3
+      - jfrog           # ~3
       - cloudflare
       - databricks
       - datadog
@@ -270,6 +287,10 @@ sources:
     enabled: true
     companies:
       - Freshworks                # ~157 roles, mostly Chennai/Bengaluru
+      - swiggy                    # ~18 in India
+      - servicenow                # ~16
+      - unacademy
+      - grab
       - Visa
     detail_limit: 30              # description fetches per company (slow but needed)
     max_postings_per_company: 200
@@ -282,31 +303,21 @@ sources:
     enabled: false
     companies: []
 
-  # Companies whose careers page has no public board API behind it. jobhunter sniffs
-  # for one anyway, and falls back to reading the rendered page in the browser.
+  # Careers pages that are NOT backed by one of the boards above.
   #
-  # These are lower yield than the board lists above — a scraped page gives a title and
-  # a link, not a description or a location — so prefer a board slug wherever a company
-  # has one. Add your own on the Career Pages tab and use its Test button first.
+  # Be aware this route rarely pays off, and the list below is short for a reason.
+  # Testing 26 Indian company career pages found that only one — Razorpay — exposed a
+  # recognisable job board, and it is already covered as a Greenhouse slug. The rest run
+  # Workday, Darwinbox, Keka or something in-house, none of which publish a readable
+  # listing. Scraping those pages returns navigation links, not jobs.
+  #
+  # So: always look for a board slug first (the lists above), and only fall back to a
+  # careers URL when a company genuinely has none. Add your own on the Career Pages tab
+  # and press its Test button — it tells you immediately whether the page yields jobs.
   custom_career_pages:
     - name: "Zoho"
-      url: "https://www.zoho.com/careers/"
+      url: "https://careers.zohocorp.com/jobs/Careers"
       default_location: "Chennai, India"
-    - name: "Freshworks"
-      url: "https://www.freshworks.com/company/careers/"
-      default_location: "Chennai, India"
-    - name: "Chargebee"
-      url: "https://www.chargebee.com/careers/"
-      default_location: "Chennai, India"
-    - name: "BrowserStack"
-      url: "https://www.browserstack.com/careers"
-      default_location: "India"
-    - name: "Juspay"
-      url: "https://juspay.io/careers"
-      default_location: "Bengaluru, India"
-    - name: "Cashfree"
-      url: "https://www.cashfree.com/careers/"
-      default_location: "Bengaluru, India"
   #  - name: "Acme Corp"
   #    url: "https://acme.com/careers"
   #    # Optional — only needed when detection fails:
