@@ -31,6 +31,10 @@ class Job:
     min_experience_years: float | None = None
     max_experience_years: float | None = None
     salary_text: str = ""
+    # Applicant count, where the source publishes one. Board APIs never do, so this
+    # stays None for most jobs — the UI shows a dash rather than a fake zero.
+    applicants: int | None = None
+    applicants_text: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -50,6 +54,28 @@ class Job:
     @property
     def search_text(self) -> str:
         return " ".join([self.title, self.company, self.location, self.description])
+
+    @property
+    def posted_display(self) -> str:
+        """Human-readable age for the results grid."""
+        age = self.age_days()
+        if age is None:
+            return "—"
+        if age < 1:
+            return "today"
+        if age < 2:
+            return "yesterday"
+        if age < 14:
+            return f"{int(age)}d ago"
+        if age < 60:
+            return f"{int(age / 7)}w ago"
+        return f"{int(age / 30)}mo ago"
+
+    @property
+    def applicants_display(self) -> str:
+        if self.applicants is not None:
+            return str(self.applicants)
+        return self.applicants_text or "—"
 
     def age_days(self) -> float | None:
         if not self.posted_at:

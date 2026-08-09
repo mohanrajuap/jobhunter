@@ -23,6 +23,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from ..browser import detect_browsers
 from ..config import Config, ConfigError, load_config
+from ..filters import POSTED_WITHIN_CHOICES, apply_runtime_filters, describe, parse_locations
 from ..models import MatchResult, Status
 from ..sources import ALL_SOURCE_NAMES
 from ..store import Store
@@ -217,6 +218,21 @@ class JobHunterApp(tk.Tk):
             command=self._warn_about_profile,
         ).pack(side="left", padx=(10, 0))
 
+        # --- row 1b: what to look for ---
+        row1b = ttk.Frame(tab)
+        row1b.pack(fill="x", padx=14, pady=(2, 6))
+
+        ttk.Label(row1b, text="Posted within").pack(side="left", padx=(0, 6))
+        self.posted_within_var = tk.StringVar(value="Last week")
+        ttk.Combobox(row1b, textvariable=self.posted_within_var, state="readonly", width=15,
+                     values=list(POSTED_WITHIN_CHOICES)).pack(side="left")
+
+        ttk.Label(row1b, text="Locations").pack(side="left", padx=(18, 6))
+        self.locations_var = tk.StringVar()
+        ttk.Entry(row1b, textvariable=self.locations_var, width=46).pack(side="left")
+        ttk.Label(row1b, text="comma separated · blank = anywhere",
+                  style="Muted.TLabel").pack(side="left", padx=8)
+
         # --- row 2: how to apply ---
         row2 = ttk.Frame(tab)
         row2.pack(fill="x", padx=14, pady=(2, 8))
@@ -255,8 +271,9 @@ class JobHunterApp(tk.Tk):
         ttk.Label(row3, textvariable=self.count_var, style="Muted.TLabel").pack(side="left", padx=14)
 
         # --- results grid ---
-        columns = ("status", "score", "title", "company", "location", "role", "resume", "source")
-        widths = (120, 58, 320, 165, 190, 135, 115, 100)
+        columns = ("status", "score", "title", "company", "location", "posted",
+                   "applicants", "role", "resume", "source")
+        widths = (118, 55, 280, 150, 165, 88, 95, 125, 105, 92)
 
         wrap = ttk.Frame(tab, style="Card.TFrame")
         wrap.pack(fill="both", expand=True, padx=14, pady=10)
@@ -548,6 +565,14 @@ class JobHunterApp(tk.Tk):
                 self.apply_mode_var.set(label)
                 break
 
+        self.locations_var.set(", ".join(self.cfg.get("search.locations", []) or []))
+        configured_age = self.cfg.get("search.posted_within_days")
+        label = next(
+            (name for name, days in POSTED_WITHIN_CHOICES.items() if days == configured_age),
+            "Any time" if configured_age is None else "Last week",
+        )
+        self.posted_within_var.set(label)
+
         for name, var in self.source_vars.items():
             if name == "career_pages":
                 var.set(bool(self.cfg.get("sources.custom_career_pages", [])))
@@ -569,6 +594,13 @@ class JobHunterApp(tk.Tk):
         self.cfg.set("apply.use_existing_profile", bool(self.use_profile_var.get()))
         self.cfg.set("apply.dry_run", bool(self.dry_run_var.get()))
         self.cfg.set("apply.mode", APPLY_MODES.get(self.apply_mode_var.get(), "auto"))
+
+        # Posted-date and location apply to every source: pushed into the query where a
+        # source supports it, and enforced in the Scorer for the ones that don't.
+        days = POSTED_WITHIN_CHOICES.get(self.posted_within_var.get())
+        locations = parse_locations(self.locations_var.get())
+        apply_runtime_filters(self.cfg, posted_within_days=days, locations=locations)
+        self._append_log(f"Filters: {describe(days, locations)}")
 
     def _populate_profile(self) -> None:
         if not self.cfg:
@@ -867,6 +899,8 @@ class JobHunterApp(tk.Tk):
                     job.title,
                     job.company,
                     job.location or "—",
+                    job.posted_display,
+                    job.applicants_display,
                     match.role_name,
                     match.resume_label or "default",
                     job.source,

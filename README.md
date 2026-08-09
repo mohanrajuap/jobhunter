@@ -118,6 +118,23 @@ you're already signed into (Naukri, LinkedIn) stay signed in. That browser has t
 **completely closed** while a run happens — including any system-tray icon — because
 Chromium won't share a profile between two programs.
 
+### Filtering a search
+
+**Posted within** (any time / 24h / 3 days / week / 2 weeks / month) and **Locations**
+(comma-separated) sit above the results and apply to **every source**. Sources that can
+filter server-side get it pushed into the query — LinkedIn's age band, Naukri's `jobAge`
+and location list — which cuts how much is fetched. ATS boards and scraped career pages
+have no such concept, so the same filter is enforced centrally when scoring. That's what
+makes "last 3 days, Chennai only" behave identically whether a job came from Naukri or a
+company's own careers page.
+
+These are per-run choices and are not written back to your config file.
+
+The results grid shows **posted date** ("today", "5d ago", "3w ago") and **applicants**
+alongside location. Applicant counts come from LinkedIn's posting pages — real numbers
+like 25, 198, 200. ATS boards don't publish them, so those rows show a dash rather than a
+fake zero.
+
 Results **stream in as they're found** — each source fills the grid while the slower ones
 are still working, rather than everything appearing at the end. **Stop** interrupts a
 search at the next checkpoint (it finishes the HTTP request already in flight, so it's

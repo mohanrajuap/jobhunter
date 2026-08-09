@@ -267,6 +267,128 @@ class TestOracleSink:
         assert sink.record(Outcome(job=make_job(), status=Status.APPLIED)) is False
 
 
+class TestRuntimeFilters:
+    """Posted-date and location have to work for every source, including ones with no
+    server-side filtering of their own."""
+
+    def _config(self):
+        return Config(data={
+            "search": {"posted_within_days": 7, "locations": ["Chennai"]},
+            "sources": {
+                "linkedin": {"enabled": True, "posted_within_days": 7, "locations": ["Chennai"]},
+                "naukri": {"enabled": True, "job_age_days": 7, "locations": ["Chennai"]},
+                "greenhouse": {"enabled": True, "boards": ["stripe"]},
+            },
+        })
+
+    def test_age_reaches_every_source_that_supports_it(self):
+        from jobhunter.filters import apply_runtime_filters
+
+        cfg = self._config()
+        apply_runtime_filters(cfg, posted_within_days=3, locations=["Bengaluru"])
+        assert cfg.get("search.posted_within_days") == 3
+        assert cfg.get("sources.linkedin.posted_within_days") == 3
+        assert cfg.get("sources.naukri.job_age_days") == 3
+
+    def test_locations_reach_every_source_that_supports_it(self):
+        from jobhunter.filters import apply_runtime_filters
+
+        cfg = self._config()
+        apply_runtime_filters(cfg, posted_within_days=None, locations=["Pune", "Mumbai"])
+        assert cfg.get("search.locations") == ["Pune", "Mumbai"]
+        assert cfg.get("sources.linkedin.locations") == ["Pune", "Mumbai"]
+        assert cfg.get("sources.naukri.locations") == ["Pune", "Mumbai"]
+
+    def test_any_time_clears_the_age_filter(self):
+        """'Any time' has to erase a configured limit, not be ignored as a missing value."""
+        from jobhunter.filters import apply_runtime_filters
+
+        cfg = self._config()
+        apply_runtime_filters(cfg, posted_within_days=None, locations=[])
+        assert cfg.get("search.posted_within_days") is None
+        assert cfg.get("sources.naukri.job_age_days") is None
+
+    def test_board_sources_are_covered_by_the_scorer(self):
+        """Greenhouse can't filter server-side, so the central filter must still bite."""
+        from jobhunter.filters import apply_runtime_filters
+        from jobhunter.matching.scorer import Scorer
+        from jobhunter.resume.keywords import ResumeProfile
+        from datetime import datetime, timedelta, timezone
+
+        cfg = self._config()
+        cfg.set("search.roles", ["Support Engineer"])
+        cfg.set("search.min_score", 0.3)
+        apply_runtime_filters(cfg, posted_within_days=3, locations=["Chennai"])
+
+        scorer = Scorer(cfg, ResumeProfile(keywords={"python": 1.0},
+                                           titles=["support engineer"], years_experience=5))
+        old = Job(source="greenhouse", company="A", title="Support Engineer", url="u",
+                  location="Chennai", posted_at=datetime.now(timezone.utc) - timedelta(days=20))
+        assert not scorer.score(old).passed
+        assert "days ago" in scorer.score(old).rejected_because
+
+    def test_location_parsing(self):
+        from jobhunter.filters import parse_locations
+
+        assert parse_locations("Chennai, Bengaluru ,  Pune ") == ["Chennai", "Bengaluru", "Pune"]
+        assert parse_locations("") == []
+
+    def test_choices_cover_the_common_windows(self):
+        from jobhunter.filters import POSTED_WITHIN_CHOICES
+
+        assert POSTED_WITHIN_CHOICES["Any time"] is None
+        assert POSTED_WITHIN_CHOICES["Last week"] == 7
+
+
+class TestPostedAndApplicantsDisplay:
+    def _job(self, days=None, applicants=None, text=""):
+        from datetime import datetime, timedelta, timezone
+
+        posted = None if days is None else datetime.now(timezone.utc) - timedelta(days=days)
+        return Job(source="t", company="A", title="T", url="u", posted_at=posted,
+                   applicants=applicants, applicants_text=text)
+
+    @pytest.mark.parametrize("days,expected", [
+        (0, "today"), (1.2, "yesterday"), (5, "5d ago"), (21, "3w ago"), (95, "3mo ago"),
+    ])
+    def test_posted_display(self, days, expected):
+        assert self._job(days=days).posted_display == expected
+
+    def test_unknown_date_shows_a_dash(self):
+        assert self._job().posted_display == "—"
+
+    def test_applicant_count_preferred_over_text(self):
+        assert self._job(applicants=198, text="Be an early applicant").applicants_display == "198"
+
+    def test_falls_back_to_text_then_dash(self):
+        assert self._job(text="Be an early applicant").applicants_display == "Be an early applicant"
+        assert self._job().applicants_display == "—"
+
+    def test_zero_applicants_is_not_treated_as_missing(self):
+        assert self._job(applicants=0).applicants_display == "0"
+
+
+class TestLinkedInDetailParsing:
+    def test_job_id_extracted_from_url(self):
+        url = "https://in.linkedin.com/jobs/view/application-support-engineer-at-acme-4448330465"
+        assert LinkedInSource._job_id(url) == "4448330465"
+
+    def test_missing_id_is_empty(self):
+        assert LinkedInSource._job_id("https://example.com/jobs/view/no-id-here") == ""
+
+    @pytest.mark.parametrize("caption,expected", [
+        ("Be among the first 25 applicants", 25),
+        ("198 applicants", 198),
+        ("Over 200 applicants", 200),
+        ("1,024 applicants", 1024),
+    ])
+    def test_applicant_counts_are_parsed(self, caption, expected):
+        from jobhunter.sources.linkedin import _APPLICANTS_RE
+
+        match = _APPLICANTS_RE.search(caption)
+        assert match and int(match.group(1).replace(",", "")) == expected
+
+
 class TestSourceSelection:
     def test_only_filters_sources(self):
         from jobhunter.sources import build_sources

@@ -157,7 +157,20 @@ search:
 
   min_experience_years: 3
   max_experience_years: 12
+
+  # Applies to every source. LinkedIn and Naukri get it pushed into the query; ATS
+  # boards and career pages have no such concept, so it is enforced centrally when
+  # scoring. Overridable per run from the Search tab. null = any date.
   posted_within_days: 7
+
+  # --- learning from the "Not relevant" button ---
+  # How many rejections from one company before it is filtered out entirely.
+  feedback_company_threshold: 3
+  # How many rejections sharing a title word before that word costs a job score.
+  feedback_term_threshold: 3
+  # Ceiling on that penalty, so feedback reshuffles the ranking without burying
+  # an otherwise strong match. Words from your own target roles are never penalised.
+  feedback_max_penalty: 0.35
 
   # Only apply above this match score (0-1). Start at 0.5, run `jobhunter discover`
   # and tune. Higher = fewer, better-targeted applications.
@@ -188,6 +201,12 @@ sources:
     posted_within_days: 7
     remote_only: false
     delay_seconds: 2.0
+    # Search cards carry no description, which caps LinkedIn matches around 65%. One
+    # extra request per job pulls the full description AND the applicant count, so
+    # matching improves and you can see how contested a role is. Capped because it is
+    # the slowest thing this source does.
+    fetch_details: true
+    detail_limit: 25
 
   # Naukri needs a logged-in browser: run `jobhunter login naukri` once.
   naukri:
