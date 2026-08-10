@@ -220,6 +220,12 @@ sources:
     enabled: true
     max_pages: 3
     results_per_page: 20
+    # Search cards carry a one-line snippet, which leaves the keyword half of the match
+    # score with nothing to read — real matches and weak ones both land around 0.6.
+    # Fetching each posting lifts keyword scoring from ~0.06 to ~0.60 on a good fit.
+    # One extra request per job, so it is capped.
+    fetch_details: true
+    detail_limit: 30
     experience_years: 5
     job_age_days: 7
     locations: ["Chennai", "Bangalore", "Hyderabad"]

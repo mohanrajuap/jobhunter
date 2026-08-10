@@ -566,6 +566,60 @@ class TestCareerPageSourceWiring:
         assert source.browser is sentinel
 
 
+class TestNaukriDetailEnrichment:
+    """Naukri search cards carry a one-line snippet, so the keyword half of scoring is
+    blind. These parse the full posting."""
+
+    def test_job_id_from_posting_url(self):
+        from jobhunter.sources.naukri import NaukriSource
+
+        job = Job(source="naukri", company="C", title="T",
+                  url="https://www.naukri.com/job-listings-java-dev-cgi-chennai-4471234?src=x")
+        assert NaukriSource.job_id_from(job) == "4471234"
+
+    def test_job_id_prefers_the_search_payload(self):
+        from jobhunter.sources.naukri import NaukriSource
+
+        job = Job(source="naukri", company="C", title="T", url="x", raw={"job_id": "998877"})
+        assert NaukriSource.job_id_from(job) == "998877"
+
+    def test_missing_job_id_is_empty(self):
+        from jobhunter.sources.naukri import NaukriSource
+
+        assert NaukriSource.job_id_from(
+            Job(source="n", company="C", title="T", url="https://x.com/a")) == ""
+
+    def test_description_html_is_stripped(self):
+        from jobhunter.sources.naukri import NaukriSource
+
+        description, _ = NaukriSource.parse_detail_payload(
+            {"jobDetails": {"description": "<p>Java <b>Spring Boot</b></p>"}})
+        assert description == "Java Spring Boot"
+
+    def test_alternate_description_key(self):
+        from jobhunter.sources.naukri import NaukriSource
+
+        description, _ = NaukriSource.parse_detail_payload(
+            {"jobDetails": {"jobDescription": "<div>Kafka</div>"}})
+        assert description == "Kafka"
+
+    @pytest.mark.parametrize("payload,expected", [
+        ({"jobDetails": {"description": "x", "applyCount": 143}}, 143),
+        ({"jobDetails": {"description": "x", "applicationDetail": {"applyCount": "77"}}}, 77),
+        ({"jobDetails": {"description": "x"}}, None),
+        ({"jobDetails": {"description": "x", "applyCount": "lots"}}, None),
+    ])
+    def test_applicant_counts(self, payload, expected):
+        from jobhunter.sources.naukri import NaukriSource
+
+        assert NaukriSource.parse_detail_payload(payload)[1] == expected
+
+    def test_empty_payload_is_safe(self):
+        from jobhunter.sources.naukri import NaukriSource
+
+        assert NaukriSource.parse_detail_payload({}) == ("", None)
+
+
 class TestWorkday:
     """Workday is the biggest single gap this closes — enterprise and Indian GCC
     hiring, none of which was reachable by sniffing or scraping."""

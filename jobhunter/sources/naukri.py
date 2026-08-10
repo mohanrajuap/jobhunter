@@ -39,6 +39,27 @@ _API_HEADERS = {
     "Referer": "https://www.naukri.com/",
 }
 
+# Search results carry a one-line snippet only. Without the full text the keyword half
+# of the match score has nothing to work with, so every Naukri job scores low on
+# relevance regardless of how well it actually fits.
+DETAIL_API = "https://www.naukri.com/jobapi/v4/job/{job_id}?microsite=y&src=jobsearchDesk"
+_DETAIL_HEADERS = {
+    "appid": "121",
+    "systemid": "121",
+    "Accept": "application/json",
+    "Referer": "https://www.naukri.com/",
+}
+
+# Naukri has renamed its JD container repeatedly; try the stable-ish ones in order.
+_JD_SELECTORS = (
+    "[class*='JDC__dang-inner-html']",
+    "div.dang-inner-html",
+    "section.job-desc",
+    "div.job-desc",
+    "[class*='job-description']",
+)
+_JOB_ID_RE = re.compile(r"-(\d{6,})(?:\?|$)")
+
 # "3 Days Ago", "Just Now", "Few Hours Ago"
 _AGE_RE = re.compile(r"(\d+)\s*(day|hour|week|month)", re.IGNORECASE)
 
@@ -103,6 +124,8 @@ class NaukriSource(Source):
         self.browser = browser
         self.max_pages = int(self.config.get("max_pages", 3))
         self.results_per_page = int(self.config.get("results_per_page", 20))
+        self.fetch_details = bool(self.config.get("fetch_details", True))
+        self.detail_limit = int(self.config.get("detail_limit", 30))
 
     def _extra_params(self) -> str:
         """Experience / location / freshness filters, as Naukri's query string wants them."""
@@ -122,6 +145,7 @@ class NaukriSource(Source):
 
         page = self.browser.new_page()
         jobs: list[Job] = []
+        enriched = 0
         try:
             page.goto("https://www.naukri.com/", wait_until="domcontentloaded")
             if is_logged_out(page):
@@ -135,6 +159,9 @@ class NaukriSource(Source):
                     log.info("naukri: stopped")
                     break
                 found = self._search(page, query)
+                if self.fetch_details:
+                    budget = max(0, self.detail_limit - enriched)
+                    enriched += self._enrich(page, found, budget)
                 log.info("naukri: '%s' -> %d jobs", query, len(found))
                 jobs.extend(found)
                 self._emit(found)
@@ -145,6 +172,99 @@ class NaukriSource(Source):
             except Exception:
                 pass
         return jobs
+
+    # --- detail enrichment ---
+
+    @staticmethod
+    def job_id_from(job: Job) -> str:
+        """Naukri's numeric job id, from the search payload or the posting URL."""
+        existing = str(job.raw.get("job_id") or "")
+        if existing:
+            return existing
+        match = _JOB_ID_RE.search(job.url or "")
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def parse_detail_payload(payload: dict) -> tuple[str, int | None]:
+        """Pull (description, applicant count) out of the job-detail JSON."""
+        details = (payload or {}).get("jobDetails") or {}
+        description = strip_html(
+            details.get("description") or details.get("jobDescription") or ""
+        )
+
+        applicants = details.get("applyCount")
+        if applicants is None:
+            applicants = (details.get("applicationDetail") or {}).get("applyCount")
+        try:
+            applicants = int(applicants) if applicants is not None else None
+        except (TypeError, ValueError):
+            applicants = None
+
+        return description, applicants
+
+    def _enrich(self, page: Any, jobs: list[Job], budget: int) -> int:
+        """Fetch full descriptions for up to `budget` jobs. Returns how many were done.
+
+        Tries the detail API through the browser's session first — it returns clean
+        JSON — and falls back to reading the posting page when that shape changes.
+        """
+        done = 0
+        for job in jobs:
+            if done >= budget or self.cancelled:
+                break
+            job_id = self.job_id_from(job)
+            if not job_id or len(job.description) > 600:
+                continue  # nothing to look up, or already substantial
+
+            if self._enrich_via_api(page, job, job_id) or self._enrich_via_page(page, job):
+                done += 1
+            self._sleep()
+
+        if done:
+            log.info("naukri: fetched full descriptions for %d job(s)", done)
+        return done
+
+    def _enrich_via_api(self, page: Any, job: Job, job_id: str) -> bool:
+        try:
+            response = page.request.get(
+                DETAIL_API.format(job_id=job_id), headers=_DETAIL_HEADERS
+            )
+            if not response.ok:
+                return False
+            description, applicants = self.parse_detail_payload(response.json())
+        except Exception as exc:
+            log.debug("naukri: detail api failed for %s — %s", job_id, exc)
+            return False
+
+        if not description:
+            return False
+        job.description = description
+        if applicants is not None:
+            job.applicants = applicants
+        return True
+
+    def _enrich_via_page(self, page: Any, job: Job) -> bool:
+        try:
+            page.goto(job.url, wait_until="domcontentloaded")
+            page.wait_for_timeout(1500)
+            text = page.evaluate(
+                """(sels) => {
+                    for (const s of sels) {
+                      const el = document.querySelector(s);
+                      if (el && el.innerText.trim().length > 200) return el.innerText.trim();
+                    }
+                    return "";
+                }""",
+                list(_JD_SELECTORS),
+            )
+        except Exception as exc:
+            log.debug("naukri: detail page failed for %s — %s", job.url, exc)
+            return False
+
+        if not text:
+            return False
+        job.description = text[:12000]
+        return True
 
     def _search(self, page: Any, query: str) -> list[Job]:
         jobs: list[Job] = []
