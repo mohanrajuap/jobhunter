@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -93,19 +94,32 @@ class Store:
     def __init__(self, db_path: str | Path):
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.path))
+        # The connection is shared between discovery's worker pool and the main
+        # thread, so it must tolerate cross-thread use; the lock serialises access.
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        with self._lock:
+            self._conn.executescript(_SCHEMA)
+            self._conn.commit()
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
-        try:
-            yield self._conn
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
+        with self._lock:
+            try:
+                yield self._conn
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def _query_one(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchone()
+
+    def _query_all(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
 
     def close(self) -> None:
         self._conn.close()
@@ -132,14 +146,56 @@ class Store:
                 ),
             )
 
+    def record_jobs(self, jobs: list[Job]) -> None:
+        """Batch upsert — one transaction for the whole list instead of one per job.
+
+        Discovery feeds several hundred jobs through here per run; committing once per
+        job was the dominant SQLite cost. Semantics are identical to `record_job`.
+        """
+        if not jobs:
+            return
+        now = _now()
+        with self._tx() as conn:
+            conn.executemany(
+                """
+                INSERT INTO jobs (fingerprint, source, ats, company, title, location,
+                                  url, apply_url, posted_at, first_seen_at, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(fingerprint) DO UPDATE SET
+                    last_seen_at = excluded.last_seen_at,
+                    apply_url    = COALESCE(NULLIF(excluded.apply_url, ''), jobs.apply_url)
+                """,
+                [
+                    (
+                        job.fingerprint, job.source, job.ats, job.company, job.title,
+                        job.location, job.url, job.apply_url,
+                        job.posted_at.isoformat() if job.posted_at else None,
+                        now, now,
+                    )
+                    for job in jobs
+                ],
+            )
+
     def has_applied(self, job: Job) -> bool:
-        row = self._conn.execute(
+        row = self._query_one(
             f"""SELECT 1 FROM applications
                 WHERE fingerprint = ? AND status IN ({','.join('?' * len(_TERMINAL))})
                 LIMIT 1""",
             (job.fingerprint, *_TERMINAL),
-        ).fetchone()
+        )
         return row is not None
+
+    def has_applied_bulk(self, fingerprints: list[str]) -> set[str]:
+        """Which of these fingerprints have a terminal application — one query, not N."""
+        if not fingerprints:
+            return set()
+        rows = self._query_all(
+            f"""SELECT DISTINCT fingerprint FROM applications
+                WHERE status IN ({','.join('?' * len(_TERMINAL))})
+                  AND fingerprint IN ({','.join('?' * len(fingerprints))})""",
+            (*_TERMINAL, *fingerprints),
+        )
+        return {row["fingerprint"] for row in rows}
 
     def seen_recently(self, job: Job, within_days: int = 30) -> bool:
         """True if we already logged *any* attempt recently — including manual/failed.
@@ -147,11 +203,23 @@ class Store:
         Stops the tool from re-queuing the same un-appliable job every single morning.
         """
         cutoff = (datetime.now(timezone.utc) - timedelta(days=within_days)).isoformat()
-        row = self._conn.execute(
+        row = self._query_one(
             "SELECT 1 FROM applications WHERE fingerprint = ? AND at >= ? LIMIT 1",
             (job.fingerprint, cutoff),
-        ).fetchone()
+        )
         return row is not None
+
+    def seen_recently_bulk(self, fingerprints: list[str], within_days: int = 30) -> set[str]:
+        """Which of these fingerprints have any attempt logged recently — one query."""
+        if not fingerprints:
+            return set()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=within_days)).isoformat()
+        rows = self._query_all(
+            f"""SELECT DISTINCT fingerprint FROM applications
+                WHERE at >= ? AND fingerprint IN ({','.join('?' * len(fingerprints))})""",
+            (cutoff, *fingerprints),
+        )
+        return {row["fingerprint"] for row in rows}
 
     # --- applications ---
 
@@ -169,21 +237,37 @@ class Store:
 
     def applications_today(self) -> int:
         start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        row = self._conn.execute(
+        row = self._query_one(
             "SELECT COUNT(*) c FROM applications WHERE status = ? AND at >= ?",
             (Status.APPLIED.value, start.isoformat()),
-        ).fetchone()
+        )
         return int(row["c"])
 
     def applications_today_for_company(self, company: str) -> int:
         start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        row = self._conn.execute(
+        row = self._query_one(
             """SELECT COUNT(*) c FROM applications a
                JOIN jobs j ON j.fingerprint = a.fingerprint
                WHERE a.status = ? AND a.at >= ? AND LOWER(j.company) = LOWER(?)""",
             (Status.APPLIED.value, start.isoformat(), company),
-        ).fetchone()
+        )
         return int(row["c"])
+
+    def applications_today_by_company(self) -> dict[str, int]:
+        """Today's applied count grouped by lowercased company — one query for the run.
+
+        Replaces calling `applications_today_for_company` once per match during the
+        apply phase, which was a query per candidate application.
+        """
+        start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        rows = self._query_all(
+            """SELECT LOWER(j.company) company, COUNT(*) c
+               FROM applications a JOIN jobs j ON j.fingerprint = a.fingerprint
+               WHERE a.status = ? AND a.at >= ?
+               GROUP BY LOWER(j.company)""",
+            (Status.APPLIED.value, start.isoformat()),
+        )
+        return {row["company"]: int(row["c"]) for row in rows}
 
     def mark_applied_manually(self, job: Job, note: str = "") -> Outcome:
         """Record that you applied to this job yourself.
@@ -244,10 +328,10 @@ class Store:
         return removed
 
     def is_irrelevant(self, job: Job) -> bool:
-        row = self._conn.execute(
+        row = self._query_one(
             "SELECT 1 FROM feedback WHERE fingerprint = ? AND label = 'irrelevant' LIMIT 1",
             (job.fingerprint,),
-        ).fetchone()
+        )
         return row is not None
 
     def feedback_signals(self) -> dict[str, dict[str, int]]:
@@ -256,9 +340,9 @@ class Store:
         Returns counts of companies and of distinctive title words. Counts matter: one
         rejection is noise, several of the same company or word is a preference.
         """
-        rows = self._conn.execute(
+        rows = self._query_all(
             "SELECT company, title FROM feedback WHERE label = 'irrelevant'"
-        ).fetchall()
+        )
 
         companies: dict[str, int] = {}
         terms: dict[str, int] = {}
@@ -273,11 +357,11 @@ class Store:
         return {"companies": companies, "title_terms": terms, "total": len(rows)}
 
     def feedback_rows(self, limit: int = 200) -> list[sqlite3.Row]:
-        return self._conn.execute(
+        return self._query_all(
             """SELECT f.label, f.company, f.title, f.source, f.reason, f.at
                FROM feedback f ORDER BY f.at DESC LIMIT ?""",
             (limit,),
-        ).fetchall()
+        )
 
     def status_for(self, job: Job) -> tuple[str, str, str]:
         """Latest known state of a job as (status, reason, iso_timestamp).
@@ -285,25 +369,45 @@ class Store:
         Returns ("new", "", "") when we've never attempted it. This is what the GUI
         uses to tell you at a glance whether you've already applied.
         """
-        row = self._conn.execute(
+        row = self._query_one(
             f"""SELECT status, reason, at FROM applications
                WHERE fingerprint = ?
                ORDER BY CASE WHEN status IN ({','.join('?' * len(_TERMINAL))}) THEN 0 ELSE 1 END,
                         at DESC
                LIMIT 1""",
             (job.fingerprint, *_TERMINAL),
-        ).fetchone()
+        )
         if row is None:
             return "new", "", ""
         return row["status"], row["reason"] or "", row["at"]
 
     def statuses_for(self, jobs: list[Job]) -> dict[str, tuple[str, str, str]]:
         """Bulk version of status_for — one query instead of N for a full result grid."""
-        return {job.fingerprint: self.status_for(job) for job in jobs}
+        if not jobs:
+            return {}
+        fingerprints = [job.fingerprint for job in jobs]
+        rows = self._query_all(
+            f"""SELECT fingerprint, status, reason, at FROM (
+                    SELECT fingerprint, status, reason, at,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY fingerprint
+                               ORDER BY CASE WHEN status IN ({','.join('?' * len(_TERMINAL))})
+                                            THEN 0 ELSE 1 END,
+                                        at DESC
+                           ) AS rn
+                    FROM applications
+                    WHERE fingerprint IN ({','.join('?' * len(fingerprints))})
+                ) WHERE rn = 1""",
+            (*_TERMINAL, *fingerprints),
+        )
+        out = {job.fingerprint: ("new", "", "") for job in jobs}
+        for row in rows:
+            out[row["fingerprint"]] = (row["status"], row["reason"] or "", row["at"])
+        return out
 
     def pending_manual(self, limit: int = 100) -> list[sqlite3.Row]:
         placeholders = ",".join("?" * len(_TERMINAL))
-        return self._conn.execute(
+        return self._query_all(
             f"""SELECT j.company, j.title, j.location, COALESCE(NULLIF(j.apply_url,''), j.url) url,
                       a.reason, a.at
                FROM applications a JOIN jobs j ON j.fingerprint = a.fingerprint
@@ -313,16 +417,14 @@ class Store:
                  )
                ORDER BY a.at DESC LIMIT ?""",
             (Status.MANUAL.value, Status.FAILED.value, *_TERMINAL, limit),
-        ).fetchall()
+        )
 
     def stats(self) -> dict[str, int]:
-        rows = self._conn.execute(
+        rows = self._query_all(
             "SELECT status, COUNT(*) c FROM applications GROUP BY status"
-        ).fetchall()
-        out = {r["status"]: int(r["c"]) for r in rows}
-        out["jobs_seen"] = int(
-            self._conn.execute("SELECT COUNT(*) c FROM jobs").fetchone()["c"]
         )
+        out = {r["status"]: int(r["c"]) for r in rows}
+        out["jobs_seen"] = int(self._query_one("SELECT COUNT(*) c FROM jobs")["c"])
         return out
 
     # --- runs ---

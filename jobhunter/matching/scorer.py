@@ -153,6 +153,17 @@ class Scorer:
         if not self.target_titles:
             log.warning("No target titles from config or resume — title scoring will be neutral")
 
+        # Invariants that never change during a run — computed once instead of per job.
+        # `_title_score` and `_keyword_score` run once per job per role, so re-deriving
+        # these on every call was the dominant CPU cost of scoring a large discovery.
+        self._target_anchors: list[set[str]] = [
+            {w for w in re.findall(r"[a-z]+", title) if w not in _GENERIC_TITLE_WORDS}
+            for title in self.target_titles
+        ]
+        self._keyword_ceiling = (
+            sum(sorted(self.profile.keywords.values(), reverse=True)[:20]) or 1.0
+        )
+
     # --- stage 1: hard filters ---
 
     def _reject(self, job: Job) -> str | None:
@@ -270,11 +281,11 @@ class Scorer:
             return 0.6
         title = job.title.lower()
         return max(
-            _ratio(title, target) * self._anchor_factor(title, target)
-            for target in self.target_titles
+            _ratio(title, target) * self._anchor_factor(title, anchors)
+            for target, anchors in zip(self.target_titles, self._target_anchors)
         )
 
-    def _anchor_factor(self, job_title: str, target: str) -> float:
+    def _anchor_factor(self, job_title: str, anchors: set[str]) -> float:
         """Penalise titles that miss the *distinctive* words of the target role.
 
         "Application Security Engineer" and "Application Support Engineer" are one word
@@ -282,9 +293,6 @@ class Scorer:
         signal, so the anchors are what's left: {application, support}. Missing an anchor
         costs the match a third of its title score.
         """
-        anchors = {w for w in re.findall(r"[a-z]+", target) if w not in _GENERIC_TITLE_WORDS}
-        if not anchors:
-            return 1.0
         present = {a for a in anchors if a in job_title}
         if present == anchors:
             return 1.0
@@ -306,10 +314,8 @@ class Scorer:
 
         # Normalise against the strongest ~20 keywords rather than all of them: no job
         # description mentions every skill on a resume, and dividing by the full set
-        # would push every score toward zero.
-        top = sorted(self.profile.keywords.values(), reverse=True)[:20]
-        ceiling = sum(top) or 1.0
-        score = min(earned / ceiling, 1.0)
+        # would push every score toward zero. The ceiling is fixed for the run.
+        score = min(earned / self._keyword_ceiling, 1.0)
         matched.sort(key=lambda k: -self.profile.keywords[k])
         return score, matched
 

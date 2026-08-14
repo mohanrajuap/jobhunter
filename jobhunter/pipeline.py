@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import queue
 import random
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -26,7 +29,7 @@ from .config import Config
 from .matching import MultiRoleScorer
 from .models import Job, MatchResult, Outcome, RunReport, Status
 from .roles import RoleTarget, load_roles
-from .sources import build_sources
+from .sources import Source, build_sources
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -118,15 +121,12 @@ class Pipeline:
         jobs: list[Job] = []
         errors: dict[str, str] = {}
 
-        for source in build_sources(self.cfg, browser=browser, only=only):
-            try:
-                self._say(f"Searching {source.name}…")
-                found = source.fetch(queries)
-                jobs.extend(found)
-                self._say(f"{source.name}: {len(found)} jobs")
-            except Exception as exc:
-                log.error("source '%s' failed entirely: %s", source.name, exc)
-                errors[source.name] = str(exc)
+        self._run_sources(
+            build_sources(self.cfg, browser=browser, only=only),
+            queries,
+            handle=lambda found: jobs.extend(found),
+            errors=errors,
+        )
 
         unique = self._dedupe(jobs)
         self._say(f"Discovered {len(jobs)} jobs ({len(unique)} after de-duplication)")
@@ -145,14 +145,18 @@ class Pipeline:
 
     def _filter_seen(self, jobs: list[Job]) -> list[Job]:
         recheck_days = int(self.cfg.get("apply.recheck_after_days", 30))
-        fresh = []
-        for job in jobs:
-            self.store.record_job(job)
-            if self.store.has_applied(job):
-                continue
-            if recheck_days > 0 and self.store.seen_recently(job, recheck_days):
-                continue
-            fresh.append(job)
+        if not jobs:
+            return []
+        # One batch upsert plus two bulk reads instead of three queries per job.
+        self.store.record_jobs(jobs)
+        fingerprints = [job.fingerprint for job in jobs]
+        applied = self.store.has_applied_bulk(fingerprints)
+        seen = (
+            self.store.seen_recently_bulk(fingerprints, recheck_days)
+            if recheck_days > 0
+            else set()
+        )
+        fresh = [j for j in jobs if j.fingerprint not in applied and j.fingerprint not in seen]
         self._say(f"{len(fresh)} jobs are new (rest already seen or applied to)")
         return fresh
 
@@ -190,23 +194,35 @@ class Pipeline:
             """Score one chunk. Streaming means we keep the first version of a duplicate
             rather than the most detailed one — a fair trade for live results."""
             nonlocal seen_count
-            fresh: list[Job] = []
+            candidates: list[Job] = []
             for job in found:
                 if not job.title or not job.company:
                     continue
                 if job.fingerprint in processed:
                     continue
                 processed.add(job.fingerprint)
-                self.store.record_job(job)
+                candidates.append(job)
 
-                if not include_seen:
-                    if self.store.has_applied(job):
-                        seen_count += 1
-                        continue
-                    if recheck_days > 0 and self.store.seen_recently(job, recheck_days):
-                        seen_count += 1
-                        continue
-                fresh.append(job)
+            if not candidates:
+                return []
+
+            # One batch upsert plus two bulk reads instead of three queries per job.
+            self.store.record_jobs(candidates)
+            if include_seen:
+                fresh = candidates
+            else:
+                fingerprints = [job.fingerprint for job in candidates]
+                applied = self.store.has_applied_bulk(fingerprints)
+                seen = (
+                    self.store.seen_recently_bulk(fingerprints, recheck_days)
+                    if recheck_days > 0
+                    else set()
+                )
+                fresh = [
+                    j for j in candidates
+                    if j.fingerprint not in applied and j.fingerprint not in seen
+                ]
+                seen_count += len(candidates) - len(fresh)
 
             if not fresh:
                 return []
@@ -232,22 +248,9 @@ class Pipeline:
 
         errors: dict[str, str] = {}
         sources = build_sources(
-            self.cfg, browser=browser, only=only, should_cancel=cancel, on_jobs=handle
+            self.cfg, browser=browser, only=only, should_cancel=cancel
         )
-
-        for source in sources:
-            if cancel():
-                self._say("Stopped.")
-                break
-            try:
-                self._say(f"Searching {source.name}…")
-                found = source.fetch(queries)
-                # Sources emit as they go; this sweeps up anything not already handled.
-                handle(found)
-                self._say(f"{source.name}: {len(found)} jobs · {len(matches)} matched so far")
-            except Exception as exc:
-                log.error("source '%s' failed entirely: %s", source.name, exc)
-                errors[source.name] = str(exc)
+        self._run_sources(sources, queries, handle, errors)
 
         self._say(
             f"{len(processed)} jobs seen, {len(matches)} matched"
@@ -255,6 +258,103 @@ class Pipeline:
         )
         self._explain_rejections(rejections, near_miss, found_any=bool(matches))
         return matches, errors
+
+    # --- running sources: HTTP boards in parallel, browser-backed ones serially ---
+
+    def _run_sources(
+        self,
+        sources: list[Source],
+        queries: list[str],
+        handle: Callable[[list[Job]], None],
+        errors: dict[str, str],
+    ) -> None:
+        """Run every source, session-backed boards in parallel, browser-backed serially.
+
+        The board APIs, Workday and Kula are independent HTTP calls, so running them
+        concurrently turns discovery wall time from the *sum* of all sources into
+        roughly the slowest one. Browser-backed sources (Naukri, career pages) share a
+        single Playwright session, which is not thread-safe, so they run afterwards,
+        one at a time.
+
+        `handle` is only ever invoked from a single consumer thread, so the pipeline's
+        shared state — dedupe set, match list, counters — needs no locks of its own.
+        """
+        serial = [s for s in sources if getattr(s, "browser", None) is not None]
+        parallel = [s for s in sources if getattr(s, "browser", None) is None]
+
+        if len(parallel) > 1:
+            self._say(f"Searching {len(parallel)} sources in parallel…")
+            self._run_parallel(parallel, queries, handle, errors)
+        else:
+            self._run_serial(parallel, queries, handle, errors)
+        self._run_serial(serial, queries, handle, errors)
+
+    def _run_serial(
+        self,
+        sources: list[Source],
+        queries: list[str],
+        handle: Callable[[list[Job]], None],
+        errors: dict[str, str],
+    ) -> None:
+        for source in sources:
+            source.on_jobs = handle  # stream mid-fetch chunks straight into the pipeline
+            try:
+                self._say(f"Searching {source.name}…")
+                found = source.fetch(queries)
+                handle(found)  # sweep anything the source didn't emit
+                self._say(f"{source.name}: {len(found)} jobs")
+            except Exception as exc:
+                log.error("source '%s' failed entirely: %s", source.name, exc)
+                errors[source.name] = str(exc)
+
+    def _run_parallel(
+        self,
+        sources: list[Source],
+        queries: list[str],
+        handle: Callable[[list[Job]], None],
+        errors: dict[str, str],
+    ) -> None:
+        """Fetch HTTP sources in a worker pool; one consumer thread scores their output.
+
+        Sources emit batches as they go, so the queue streams results to the consumer
+        continuously instead of waiting for the slowest source to finish. The returned
+        list from each fetch is enqueued as a final sweep for anything not emitted.
+        """
+        batches: queue.Queue = queue.Queue()
+        for source in sources:
+            source.on_jobs = batches.put
+
+        max_workers = min(len(sources), max(1, int(self.cfg.get("http.max_workers", 4))))
+        stop = threading.Event()
+
+        def consume() -> None:
+            while not stop.is_set() or not batches.empty():
+                try:
+                    found = batches.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                try:
+                    handle(found)
+                except Exception as exc:
+                    log.error("failed to score a batch from a parallel source: %s", exc)
+
+        consumer = threading.Thread(target=consume, daemon=True)
+        consumer.start()
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(source.fetch, queries): source for source in sources}
+                for future in as_completed(futures):
+                    source = futures[future]
+                    try:
+                        found = future.result()
+                        batches.put(found)
+                        self._say(f"{source.name}: {len(found)} jobs")
+                    except Exception as exc:
+                        log.error("source '%s' failed entirely: %s", source.name, exc)
+                        errors[source.name] = str(exc)
+        finally:
+            stop.set()
+            consumer.join(timeout=10)
 
     def _explain_rejections(
         self, rejections: dict[str, int], near_miss: list, found_any: bool
@@ -357,6 +457,9 @@ class Pipeline:
             self._say(f"Daily cap of {daily_cap} already reached ({already_today} applied today)")
             return []
 
+        # One grouped query instead of a lookup per candidate application.
+        today_by_company = self.store.applications_today_by_company()
+
         self._say(f"Applying to up to {min(budget, len(matches))} jobs (dry_run={dry_run})")
 
         outcomes: list[Outcome] = []
@@ -372,7 +475,7 @@ class Pipeline:
                 continue
 
             company_key = match.job.company.lower()
-            used = per_company.get(company_key, 0) + self.store.applications_today_for_company(match.job.company)
+            used = per_company.get(company_key, 0) + today_by_company.get(company_key, 0)
             if used >= company_cap:
                 outcomes.append(Outcome(
                     job=match.job, status=Status.SKIPPED, score=match.score,
