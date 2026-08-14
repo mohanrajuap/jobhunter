@@ -1,14 +1,30 @@
-# jobhunter
+# Naukri & LinkedIn Auto Apply — automated job search and application bot
 
-Finds jobs that match your resume every morning, applies to the ones it can, and emails
-you a list of the ones it couldn't so you can finish them by hand.
+**Finds jobs matching your resume every morning, applies to them automatically, and emails
+you the ones it couldn't so you can finish those by hand.**
 
-Runs as a desktop app or as a scheduled background task.
+Searches **Naukri**, **LinkedIn**, **Workday** and eight ATS platforms — Greenhouse, Lever,
+Ashby, SmartRecruiters, Workable, Recruitee, Kula — plus any company careers page you point
+it at. Runs as a desktop app or as a scheduled background task.
+
+Built for the Indian job market (Naukri, Chennai/Bangalore/Hyderabad defaults), but the
+sources and filters work anywhere.
 
 ```
 Discover ──▶ De-duplicate ──▶ Match ──▶ Apply ──▶ Notify
- 8 sources    vs. history    per role   browser   email/Telegram
+10 sources    vs. history    per role   browser   email/Telegram
 ```
+
+**What makes it different from the other auto-apply bots:**
+
+- **Naukri support**, which most job-application bots skip entirely
+- **Never guesses.** A screening question it can't answer from your profile sends the job
+  to a manual queue rather than inventing an answer
+- **Multiple roles, multiple resumes** — each job gets the CV that fits it best
+- **Finds career-site APIs for you** — `jobhunter probe <careers-url>` works out where any
+  company keeps its job data
+- **Learns** — mark jobs "not relevant" and similar ones stop surfacing
+- A real desktop UI, not a script
 
 ---
 
