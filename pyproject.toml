@@ -5,8 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jobhunter"
 version = "0.1.0"
-description = "Autonomous daily job discovery and application agent"
+description = "Autonomously finds and applies to jobs on Naukri, LinkedIn, Workday and 8 ATS platforms"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+keywords = ["naukri", "linkedin", "job-search", "auto-apply", "job-bot", "ats", "automation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business",
+    "Topic :: Utilities",
+]
 dependencies = [
     "PyYAML>=6.0.1",
     "requests>=2.32.0",
