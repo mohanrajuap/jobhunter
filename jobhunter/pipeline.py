@@ -297,11 +297,20 @@ class Pipeline:
         errors: dict[str, str],
     ) -> None:
         for source in sources:
-            source.on_jobs = handle  # stream mid-fetch chunks straight into the pipeline
+            emitted = [False]
+
+            def _on_jobs(found: list[Job]) -> None:
+                emitted[0] = True
+                handle(found)
+
+            source.on_jobs = _on_jobs  # stream mid-fetch chunks straight into the pipeline
             try:
                 self._say(f"Searching {source.name}…")
                 found = source.fetch(queries)
-                handle(found)  # sweep anything the source didn't emit
+                # A source that emitted has already fed every returned job through
+                # handle as chunks; sweeping the return value too would double-count.
+                if not emitted[0]:
+                    handle(found)
                 self._say(f"{source.name}: {len(found)} jobs")
             except Exception as exc:
                 log.error("source '%s' failed entirely: %s", source.name, exc)
@@ -317,12 +326,22 @@ class Pipeline:
         """Fetch HTTP sources in a worker pool; one consumer thread scores their output.
 
         Sources emit batches as they go, so the queue streams results to the consumer
-        continuously instead of waiting for the slowest source to finish. The returned
-        list from each fetch is enqueued as a final sweep for anything not emitted.
+        continuously instead of waiting for the slowest source to finish. Only sources
+        that never emitted get a final sweep of their return value — emitting sources
+        have already queued every returned job as chunks.
         """
         batches: queue.Queue = queue.Queue()
+        emitted: dict[Source, bool] = {source: False for source in sources}
+
+        def _hook(source: Source) -> Callable[[list[Job]], None]:
+            def _on_jobs(found: list[Job]) -> None:
+                emitted[source] = True
+                batches.put(found)
+
+            return _on_jobs
+
         for source in sources:
-            source.on_jobs = batches.put
+            source.on_jobs = _hook(source)
 
         max_workers = min(len(sources), max(1, int(self.cfg.get("http.max_workers", 4))))
         stop = threading.Event()
@@ -347,7 +366,8 @@ class Pipeline:
                     source = futures[future]
                     try:
                         found = future.result()
-                        batches.put(found)
+                        if not emitted[source]:
+                            batches.put(found)
                         self._say(f"{source.name}: {len(found)} jobs")
                     except Exception as exc:
                         log.error("source '%s' failed entirely: %s", source.name, exc)
@@ -355,6 +375,13 @@ class Pipeline:
         finally:
             stop.set()
             consumer.join(timeout=10)
+            # The pool has exited so nothing is still producing; whatever the consumer
+            # didn't get to before exiting is processed here rather than dropped.
+            while True:
+                try:
+                    handle(batches.get_nowait())
+                except queue.Empty:
+                    break
 
     def _explain_rejections(
         self, rejections: dict[str, int], near_miss: list, found_any: bool

@@ -90,6 +90,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _chunks(items: list, size: int = 900):
+    """Split a list into fixed-size slices.
+
+    Keeps `IN (...)` bind counts under SQLite's per-query variable limit — 32766 in
+    modern SQLite but only 999 before 3.32, which a 1000+ job run would blow through.
+    """
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
 class Store:
     def __init__(self, db_path: str | Path):
         self.path = Path(db_path)
@@ -122,7 +132,8 @@ class Store:
             return self._conn.execute(sql, params).fetchall()
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     # --- jobs ---
 
@@ -186,16 +197,21 @@ class Store:
         return row is not None
 
     def has_applied_bulk(self, fingerprints: list[str]) -> set[str]:
-        """Which of these fingerprints have a terminal application — one query, not N."""
-        if not fingerprints:
-            return set()
-        rows = self._query_all(
-            f"""SELECT DISTINCT fingerprint FROM applications
-                WHERE status IN ({','.join('?' * len(_TERMINAL))})
-                  AND fingerprint IN ({','.join('?' * len(fingerprints))})""",
-            (*_TERMINAL, *fingerprints),
-        )
-        return {row["fingerprint"] for row in rows}
+        """Which of these fingerprints have a terminal application — one query, not N.
+
+        Chunked so the `IN (...)` list stays under SQLite's variable limit (999 before
+        3.32, 32766 after) — a 1000+ job run would otherwise fail mid-discovery.
+        """
+        out: set[str] = set()
+        for chunk in _chunks(fingerprints):
+            rows = self._query_all(
+                f"""SELECT DISTINCT fingerprint FROM applications
+                    WHERE status IN ({','.join('?' * len(_TERMINAL))})
+                      AND fingerprint IN ({','.join('?' * len(chunk))})""",
+                (*_TERMINAL, *chunk),
+            )
+            out.update(row["fingerprint"] for row in rows)
+        return out
 
     def seen_recently(self, job: Job, within_days: int = 30) -> bool:
         """True if we already logged *any* attempt recently — including manual/failed.
@@ -210,16 +226,22 @@ class Store:
         return row is not None
 
     def seen_recently_bulk(self, fingerprints: list[str], within_days: int = 30) -> set[str]:
-        """Which of these fingerprints have any attempt logged recently — one query."""
+        """Which of these fingerprints have any attempt logged recently — one query.
+
+        Chunked like `has_applied_bulk` to respect SQLite's bind-variable limit.
+        """
+        out: set[str] = set()
         if not fingerprints:
-            return set()
+            return out
         cutoff = (datetime.now(timezone.utc) - timedelta(days=within_days)).isoformat()
-        rows = self._query_all(
-            f"""SELECT DISTINCT fingerprint FROM applications
-                WHERE at >= ? AND fingerprint IN ({','.join('?' * len(fingerprints))})""",
-            (cutoff, *fingerprints),
-        )
-        return {row["fingerprint"] for row in rows}
+        for chunk in _chunks(fingerprints):
+            rows = self._query_all(
+                f"""SELECT DISTINCT fingerprint FROM applications
+                    WHERE at >= ? AND fingerprint IN ({','.join('?' * len(chunk))})""",
+                (cutoff, *chunk),
+            )
+            out.update(row["fingerprint"] for row in rows)
+        return out
 
     # --- applications ---
 
@@ -382,27 +404,30 @@ class Store:
         return row["status"], row["reason"] or "", row["at"]
 
     def statuses_for(self, jobs: list[Job]) -> dict[str, tuple[str, str, str]]:
-        """Bulk version of status_for — one query instead of N for a full result grid."""
-        if not jobs:
-            return {}
-        fingerprints = [job.fingerprint for job in jobs]
-        rows = self._query_all(
-            f"""SELECT fingerprint, status, reason, at FROM (
-                    SELECT fingerprint, status, reason, at,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY fingerprint
-                               ORDER BY CASE WHEN status IN ({','.join('?' * len(_TERMINAL))})
-                                            THEN 0 ELSE 1 END,
-                                        at DESC
-                           ) AS rn
-                    FROM applications
-                    WHERE fingerprint IN ({','.join('?' * len(fingerprints))})
-                ) WHERE rn = 1""",
-            (*_TERMINAL, *fingerprints),
-        )
+        """Bulk version of status_for — one query instead of N for a full result grid.
+
+        Chunked like `has_applied_bulk` to respect SQLite's bind-variable limit.
+        """
         out = {job.fingerprint: ("new", "", "") for job in jobs}
-        for row in rows:
-            out[row["fingerprint"]] = (row["status"], row["reason"] or "", row["at"])
+        terminal = ",".join("?" * len(_TERMINAL))
+        for chunk in _chunks(jobs):
+            fingerprints = [job.fingerprint for job in chunk]
+            rows = self._query_all(
+                f"""SELECT fingerprint, status, reason, at FROM (
+                        SELECT fingerprint, status, reason, at,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY fingerprint
+                                   ORDER BY CASE WHEN status IN ({terminal})
+                                                THEN 0 ELSE 1 END,
+                                            at DESC
+                               ) AS rn
+                        FROM applications
+                        WHERE fingerprint IN ({','.join('?' * len(fingerprints))})
+                    ) WHERE rn = 1""",
+                (*_TERMINAL, *fingerprints),
+            )
+            for row in rows:
+                out[row["fingerprint"]] = (row["status"], row["reason"] or "", row["at"])
         return out
 
     def pending_manual(self, limit: int = 100) -> list[sqlite3.Row]:
